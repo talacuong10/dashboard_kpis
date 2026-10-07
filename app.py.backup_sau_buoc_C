@@ -1,0 +1,3989 @@
+"""
+HDBank - Web Dashboard Tổng Quan KPIs & Lương Phụ Trội QHKHDN
+============================================================
+Chuẩn hóa 100% theo dữ liệu thực tế và tài liệu Prompt_Dac_ta_Cong_thuc_Dashboard_KPIs_LPT.md:
+- 3 Slicer phong cách PowerBI: KHU VỰC (KV1-KV6), SỐ THÁNG (Kỳ lũy kế 1T-12T & Tháng cụ thể), KHỐI CHỈ TIÊU (Bảng A-F)
+- 6 Thẻ KPI Pill chuẩn màu & chỉ tiêu thật: Tổng NS, Đạt KPIs, Thỏa LPT, Tổng ĐVKD, KHDN mới, KHTD tăng ròng
+- Delta tự động tính toán từ dữ liệu thật so với kỳ tháng trước đó (không hardcode)
+- 3 Biểu đồ: Donut Đạt KPIs, Bar Tỷ lệ đạt KPIs theo 6 Khu vực (%), Bar Tỷ lệ thỏa LPT theo 6 Khu vực (%)
+- Bảng ma trận chi tiết 6 Khối chỉ tiêu & Xuất báo cáo Excel 6 sheet
+"""
+
+import base64
+import hashlib
+import io
+import json
+import os
+import secrets
+import socket
+import sys
+import unicodedata
+from datetime import datetime
+from pathlib import Path
+import random
+from typing import Optional
+
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CẤU HÌNH TRANG VÀ CSS ĐẶC TẢ GIAO DIỆN HDBANK
+# ──────────────────────────────────────────────────────────────────────────────
+
+st.set_page_config(
+    page_title="HDBank - Kết Quả Tổng Quan KPIs & LPT",
+    page_icon="🏦",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+HDBANK_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Segoe+UI:wght@400;600;700;800&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+}
+
+.block-container {
+    padding-top: 0.8rem !important;
+    padding-bottom: 1.5rem !important;
+    padding-left: 2rem !important;
+    padding-right: 2rem !important;
+    max-width: 98% !important;
+}
+
+/* Header Container */
+.hdbank-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 6px 14px 6px;
+    border-bottom: 1.5px solid #e5e7eb;
+    margin-bottom: 12px;
+    gap: 16px;
+}
+.hdbank-brand {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+.hdbank-brand img {
+    height: 85px !important;
+    max-height: 90px !important;
+    width: auto !important;
+    object-fit: contain !important;
+}
+.hdbank-title-center {
+    text-align: center;
+    flex-grow: 1;
+    padding: 0 10px;
+}
+.hdbank-main-title {
+    font-size: 20px;
+    font-weight: 800;
+    color: #111827;
+    letter-spacing: 0.2px;
+    margin: 0;
+    text-transform: uppercase;
+}
+.hdbank-sub-title {
+    font-size: 13.5px;
+    color: #4b5563;
+    margin-top: 4px;
+    font-weight: 500;
+}
+.hdbank-date-right {
+    text-align: right;
+    font-size: 12px;
+    color: #374151;
+    line-height: 1.6;
+    flex-shrink: 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   SLICER BOX STYLES & EQUAL HEIGHT (Streamlit 1.42+ & legacy compatible)
+   ───────────────────────────────────────────────────────────────────────── */
+div[data-testid="stHorizontalBlock"]:has(.slicer-card-header) {
+    align-items: stretch !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.slicer-card-header) > div[data-testid="stColumn"] {
+    display: flex !important;
+    flex-direction: column !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.slicer-card-header) > div[data-testid="stColumn"] > div[data-testid="stVerticalBlock"] {
+    height: 100% !important;
+    flex: 1 1 auto !important;
+    display: flex !important;
+    flex-direction: column !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.slicer-card-header) div[data-testid="stLayoutWrapper"] {
+    height: 100% !important;
+    flex: 1 1 auto !important;
+    display: flex !important;
+    flex-direction: column !important;
+}
+
+/* Slicer container card — viền trên pastel riêng theo từng panel (xem 3 rule bên dưới) */
+div[data-testid="stHorizontalBlock"]:has(.slicer-card-header) div[data-testid="stLayoutWrapper"]:has(.slicer-card-header) > div[data-testid="stVerticalBlock"],
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.slicer-card-header) {
+    border: 1px solid #e2e8f0 !important;
+    border-top: 3.5px solid #cbd5e1 !important;
+    border-radius: 6px !important;
+    background: #ffffff !important;
+    padding: 10px 12px 12px 12px !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04) !important;
+    height: 100% !important;
+    flex: 1 1 auto !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: flex-start !important;
+}
+/* Viền trên pastel riêng theo từng Slicer: KHU VỰC = tím, SỐ THÁNG = xanh dương, KHỐI CHỈ TIÊU = hồng */
+div[data-testid="stHorizontalBlock"]:has(.slicer-card-header) div[data-testid="stLayoutWrapper"]:has(.slicer-card-header-kv) > div[data-testid="stVerticalBlock"],
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.slicer-card-header-kv) {
+    border-top: 3.5px solid #8b7ff5 !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.slicer-card-header) div[data-testid="stLayoutWrapper"]:has(.slicer-card-header-thang) > div[data-testid="stVerticalBlock"],
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.slicer-card-header-thang) {
+    border-top: 3.5px solid #60a5fa !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.slicer-card-header) div[data-testid="stLayoutWrapper"]:has(.slicer-card-header-ct) > div[data-testid="stVerticalBlock"],
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.slicer-card-header-ct) {
+    border-top: 3.5px solid #ec4899 !important;
+}
+
+/* Row gap inside slicer cards */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[data-testid="stHorizontalBlock"] {
+    gap: 6px !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[data-testid="stVerticalBlock"] {
+    gap: 8px !important;
+}
+/* Đảm bảo mỗi block markdown (header/label) và mỗi hàng nút là 1 khối tách bạch,
+   không bị co lại/chồng lên nhau do Streamlit collapse margin của element rỗng */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[data-testid="stElementContainer"] {
+    width: 100% !important;
+}
+
+.slicer-card-header {
+    font-size: 11.5px !important;
+    font-weight: 800 !important;
+    color: #111827 !important;
+    letter-spacing: 0.3px !important;
+    text-transform: uppercase !important;
+    padding-bottom: 5px !important;
+    border-bottom: 1px solid #f1f5f9 !important;
+    margin-bottom: 4px !important;
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+}
+
+.slicer-sub-label {
+    font-size: 9.5px !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.4px !important;
+    text-transform: uppercase !important;
+    color: #64748b !important;
+    width: 100% !important;
+    margin: 4px 0 8px 0 !important;
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 5px !important;
+    line-height: 1.4 !important;
+    position: relative !important;
+    z-index: 1 !important;
+}
+.sub-label-indicator {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+}
+.indicator-navy { background-color: #1e3a8a; }
+.indicator-slate { background-color: #64748b; }
+.indicator-gold { background-color: #f59e0b; }
+.slicer-divider {
+    height: 1px;
+    background-color: #e5e7eb;
+    margin: 5px 0 4px 0;
+}
+
+/* Slicer button overrides inside the slicer containers */
+div[data-testid="stColumn"]:has(.slicer-card-header) .stButton > button {
+    width: 100% !important;
+    border-radius: 6px !important;
+    margin: 0 !important;
+    transition: all 0.15s ease !important;
+}
+
+/* PRIMARY (ACTIVE/SELECTED) BUTTON — mặc định trung tính, các nhóm pastel bên dưới override theo panel */
+div[data-testid="stColumn"]:has(.slicer-card-header) .stButton > button[kind="primary"] {
+    border: none !important;
+    color: #ffffff !important;
+    font-weight: 700 !important;
+}
+
+/* KHU VỰC (nút "Toàn Hàng" + KV1-KV6 + ĐVKD con): Tím pastel */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_all_kv"] .stButton > button[kind="primary"],
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_kv"] .stButton > button[kind="primary"],
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_dv_"] .stButton > button[kind="primary"] {
+    background-color: #8b7ff5 !important;
+    box-shadow: 0 1px 3px rgba(139, 127, 245, 0.35) !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_all_kv"] .stButton > button[kind="primary"]:hover,
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_kv"] .stButton > button[kind="primary"]:hover,
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_dv_"] .stButton > button[kind="primary"]:hover {
+    background-color: #7566e8 !important;
+}
+
+/* SỐ THÁNG (nút "Tất cả các tháng" + Kỳ lũy kế + Theo tháng cụ thể): Xanh dương pastel */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_all_months"] .stButton > button[kind="primary"],
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_k_"] .stButton > button[kind="primary"],
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_m_"] .stButton > button[kind="primary"] {
+    background-color: #60a5fa !important;
+    box-shadow: 0 1px 3px rgba(96, 165, 250, 0.35) !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_all_months"] .stButton > button[kind="primary"]:hover,
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_k_"] .stButton > button[kind="primary"]:hover,
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_m_"] .stButton > button[kind="primary"]:hover {
+    background-color: #3b82f6 !important;
+}
+
+/* KHỐI CHỈ TIÊU (nút "Tất cả chỉ tiêu" + từng chỉ tiêu): Hồng pastel */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_all_ct"] .stButton > button[kind="primary"],
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_ct_"] .stButton > button[kind="primary"] {
+    background-color: #ec4899 !important;
+    box-shadow: 0 1px 3px rgba(236, 72, 153, 0.35) !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_all_ct"] .stButton > button[kind="primary"]:hover,
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_ct_"] .stButton > button[kind="primary"]:hover {
+    background-color: #db2777 !important;
+}
+
+/* 1. KHU VỰC block: nhóm nút giãn đều lấp đầy chiều cao container (fix mất cân đối v2.7) */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_kv"] {
+    flex: 1 1 auto !important;
+    display: flex !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_kv"] > div {
+    flex: 1 1 auto !important;
+    display: flex !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_kv"] .stButton {
+    flex: 1 1 auto !important;
+    display: flex !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_kv"] .stButton > button {
+    flex: 1 1 auto !important;
+    min-height: 52px !important;
+    height: 100% !important;
+    font-size: 11.5px !important;
+    font-weight: 700 !important;
+    padding: 2px 6px !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_kv"] .stButton > button[kind="secondary"] {
+    background-color: #ffffff !important;
+    border: 1px solid #d1d5db !important;
+    color: #1f2937 !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_kv"] .stButton > button[kind="secondary"]:hover {
+    background-color: #f3f4f6 !important;
+    border-color: #9ca3af !important;
+    color: #111827 !important;
+}
+/* Các cột r1_c1 / r1_c2 chứa 3 nút KV: giãn đều theo chiều dọc để lấp hết khối */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-btn_kv"]) {
+    flex: 1 1 auto !important;
+    height: 100% !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-btn_kv"]) div[data-testid="stColumn"] {
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-btn_kv"]) div[data-testid="stVerticalBlock"] {
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-between !important;
+    height: 100% !important;
+    flex: 1 1 auto !important;
+    gap: 6px !important;
+}
+
+/* 1b. KHU VỰC: nút ĐVKD (MA_DV) con — xổ ra khi đã chọn 1 Khu vực, đa lựa chọn */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_dv_"] .stButton > button {
+    height: 30px !important;
+    min-height: 30px !important;
+    max-height: 30px !important;
+    font-size: 10px !important;
+    font-weight: 600 !important;
+    padding: 2px 5px !important;
+    white-space: normal !important;
+    line-height: 1.15 !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_dv_"] .stButton > button[kind="secondary"] {
+    background-color: #f5f3ff !important;
+    border: 1px solid #ddd6fe !important;
+    color: #5b21b6 !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_dv_"] .stButton > button[kind="secondary"]:hover {
+    background-color: #ede9fe !important;
+    border-color: #c4b5fd !important;
+    color: #4c1d95 !important;
+}
+
+/* 2. SỐ THÁNG buttons (Kỳ lũy kế: Soft Navy tint) */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_k_"] .stButton > button {
+    height: 28px !important;
+    min-height: 28px !important;
+    max-height: 28px !important;
+    font-size: 9.5px !important;
+    font-weight: 600 !important;
+    padding: 2px 4px !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_k_"] .stButton > button[kind="secondary"] {
+    background-color: #f0f4f9 !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #1e3a8a !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_k_"] .stButton > button[kind="secondary"]:hover {
+    background-color: #e2eaf4 !important;
+    border-color: #94a3b8 !important;
+    color: #0f2c59 !important;
+}
+
+/* 3. SỐ THÁNG buttons (Theo tháng: Soft Slate tint) */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_m_"] .stButton > button {
+    height: 28px !important;
+    min-height: 28px !important;
+    max-height: 28px !important;
+    font-size: 10.5px !important;
+    font-weight: 600 !important;
+    padding: 2px 5px !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_m_"] .stButton > button[kind="secondary"] {
+    background-color: #f8fafc !important;
+    border: 1px solid #e2e8f0 !important;
+    color: #475569 !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_m_"] .stButton > button[kind="secondary"]:hover {
+    background-color: #f1f5f9 !important;
+    border-color: #cbd5e1 !important;
+    color: #1e293b !important;
+}
+
+/* 3b. ĐỒNG BỘ ĐỘ RỘNG 6 CỘT trong mọi hàng của khối SỐ THÁNG (kể cả hàng lẻ chỉ có
+   1 nút như "Kỳ 7T" hay "T07/2026") — ép mọi stColumn trong các hàng này có cùng
+   flex-basis, tránh trường hợp cột trống bị co lại khiến nút còn lại phình to ra. */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-btn_k_"]) > div[data-testid="stColumn"],
+div[data-testid="stColumn"]:has(.slicer-card-header) div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-btn_m_"]) > div[data-testid="stColumn"] {
+    flex: 1 1 0px !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    width: auto !important;
+}
+/* Các hàng nút Kỳ/Tháng luôn cách đều nhau kể cả khi hàng chỉ có 1 nút thật sự */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-btn_k_"]),
+div[data-testid="stColumn"]:has(.slicer-card-header) div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-btn_m_"]) {
+    width: 100% !important;
+    margin-bottom: 2px !important;
+}
+
+/* 4. KHỐI CHỈ TIÊU buttons (Fixed 44px height, multi-line wrap, perfectly aligned rows) */
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_ct_"] .stButton > button {
+    height: 44px !important;
+    min-height: 44px !important;
+    max-height: 44px !important;
+    padding: 3px 6px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    text-align: center !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_ct_"] .stButton > button,
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_ct_"] .stButton > button p {
+    font-size: 10.5px !important;
+    font-weight: 600 !important;
+    line-height: 1.22 !important;
+    white-space: normal !important;
+    word-break: break-word !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_ct_"] .stButton > button[kind="secondary"] {
+    background-color: #ffffff !important;
+    border: 1px solid #d1d5db !important;
+    color: #1f2937 !important;
+}
+div[data-testid="stColumn"]:has(.slicer-card-header) div[class*="st-key-btn_ct_"] .stButton > button[kind="secondary"]:hover {
+    background-color: #f3f4f6 !important;
+    border-color: #9ca3af !important;
+    color: #111827 !important;
+}
+
+/* 6 KPI Cards (Pill shape) — nền pastel nhạt riêng theo từng thẻ + icon badge tròn màu đậm hơn */
+.kpi-pill {
+    border: none;
+    border-radius: 20px;
+    padding: 10px 8px;
+    text-align: center;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    height: 158px;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    position: relative;
+}
+.kpi-pill:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+}
+.kpi-icon-badge {
+    position: absolute;
+    top: 10px;
+    left: 12px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+}
+.kpi-bg-purple { background: #f1efff; }
+.kpi-bg-green { background: #ecfdf5; }
+.kpi-bg-orange { background: #fff7ed; }
+.kpi-bg-blue { background: #eff6ff; }
+.kpi-bg-pink { background: #fdf2f8; }
+.kpi-bg-amber { background: #fffbeb; }
+.kpi-icon-purple { background: #8b7ff5; color: #ffffff; }
+.kpi-icon-green { background: #34d399; color: #ffffff; }
+.kpi-icon-orange { background: #fb923c; color: #ffffff; }
+.kpi-icon-blue { background: #60a5fa; color: #ffffff; }
+.kpi-icon-pink { background: #f472b6; color: #ffffff; }
+.kpi-icon-amber { background: #fbbf24; color: #ffffff; }
+.kpi-title {
+    font-size: 14.5px;
+    font-weight: 800;
+    color: #1f2937;
+    line-height: 1.3;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding-top: 14px;
+}
+.kpi-value-container {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 8px;
+    margin: 4px 0;
+}
+.kpi-big-num {
+    font-size: 40px;
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: -0.5px;
+}
+.kpi-sub-pct {
+    font-size: 16.5px;
+    font-weight: 800;
+    color: #1f2937;
+}
+.kpi-delta {
+    font-size: 13.5px;
+    font-weight: 800;
+}
+
+/* Delta color */
+.delta-up { color: #059669; }
+.delta-down { color: #e11d48; }
+.delta-neutral { color: #6b7280; }
+
+/* KPI value colors — pastel, đồng bộ với nền .kpi-bg-* tương ứng */
+.color-blue { color: #3b82f6; }
+.color-green { color: #10b981; }
+.color-orange { color: #fb923c; }
+.color-navy { color: #8b7ff5; }
+.color-magenta { color: #ec4899; }
+.color-red { color: #fbbf24; }
+
+/* Chart Container Card */
+.chart-box {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 8px 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+</style>
+"""
+
+st.markdown(HDBANK_CSS, unsafe_allow_html=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# QUẢN LÝ SESSION STATE BỘ LỌC VÀ DỮ LIỆU
+# ──────────────────────────────────────────────────────────────────────────────
+
+if "filter_kv" not in st.session_state:
+    st.session_state.filter_kv = ""
+
+if "filter_thang" not in st.session_state:
+    st.session_state.filter_thang = ""
+
+if "filter_chi_tieu" not in st.session_state:
+    st.session_state.filter_chi_tieu = ""
+
+if "filter_ma_dv" not in st.session_state:
+    st.session_state.filter_ma_dv = []
+
+if "filter_nhan_su" not in st.session_state:
+    st.session_state.filter_nhan_su = []
+
+if "uploaded_df" not in st.session_state:
+    st.session_state.uploaded_df = None
+
+if "uploaded_file_name" not in st.session_state:
+    st.session_state.uploaded_file_name = ""
+
+if "uploaded_dvkd_items" not in st.session_state:
+    st.session_state.uploaded_dvkd_items = None
+
+if "uploaded_file_name_dvkd" not in st.session_state:
+    st.session_state.uploaded_file_name_dvkd = ""
+
+if "use_demo" not in st.session_state:
+    st.session_state.use_demo = False
+
+# Hỗ trợ URL query params để test và bookmark trạng thái bộ lọc
+params = st.query_params
+if params.get("demo") in ["1", "true", "True"]:
+    st.session_state.use_demo = True
+if "kv" in params:
+    st.session_state.filter_kv = params.get("kv")
+if "thang" in params:
+    st.session_state.filter_thang = params.get("thang")
+if "ct" in params:
+    st.session_state.filter_chi_tieu = params.get("ct")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# XỬ LÝ TIỀN DỮ LIỆU FILE EXCEL (Sheet 'Data import')
+# ──────────────────────────────────────────────────────────────────────────────
+
+REQUIRED_COLUMNS = [
+    "SYM_RUN_DATE",
+    "MA_KV",
+    "TEN_KV",
+    "MA_DV",
+    "TEN_DV",
+    "TEN_CV",
+    "KET_QUA_KPIS",
+    "KET_QUA_LPT",
+    "SL_KHDN_MOI_N",
+    "SL_KHDN_TANG_RONG",
+    "SL_KH_TD_TANG_RONG",
+    "Hệ số LPT thực nhận",
+    "TONG_CV_THANG_N",
+    "TONG_CV_THANG_N_1",
+    "TANG_RONG_CV",
+    "TONG_HD_THANG_N",
+    "TONG_HD_THANG_N_1",
+    "TANG_RONG_HD",
+    "DU_CHI_HUY_DONG",
+    "DU_THU_CHO_VAY",
+    "THU_TU_THANH_TOAN",
+    "THU_QUAN_LY_TIEN_MAT",
+    "THU_NGAN_HANG_DIEN_TU",
+    "THU_NGAN_QUY",
+    "THU_TAI_TRO_THUONG_MAI",
+    "THU_BAO_LANH",
+    "THU_TIN_DUNG",
+    "THU_MUA_BAN_NGOAI_TE",
+]
+
+# 16 cột số liệu cấp ĐVKD cho Khối G (Dư nợ) / H (Huy động) / I (TOI) — CẢNH BÁO: các cột này
+# lặp lại y hệt trên mọi dòng nhân sự cùng 1 (MA_DV, SYM_RUN_DATE). TUYỆT ĐỐI KHÔNG SUM trực
+# tiếp theo dòng — luôn dùng agg_unit_level_metric() (dedup trước khi sum). Xem Mục 6 memory_project.md.
+UNIT_LEVEL_NUMERIC_COLUMNS = [
+    "TONG_CV_THANG_N",
+    "TONG_CV_THANG_N_1",
+    "TANG_RONG_CV",
+    "TONG_HD_THANG_N",
+    "TONG_HD_THANG_N_1",
+    "TANG_RONG_HD",
+    "DU_CHI_HUY_DONG",
+    "DU_THU_CHO_VAY",
+    "THU_TU_THANH_TOAN",
+    "THU_QUAN_LY_TIEN_MAT",
+    "THU_NGAN_HANG_DIEN_TU",
+    "THU_NGAN_QUY",
+    "THU_TAI_TRO_THUONG_MAI",
+    "THU_BAO_LANH",
+    "THU_TIN_DUNG",
+    "THU_MUA_BAN_NGOAI_TE",
+]
+
+# 6 Dải % Hệ số LPT thực nhận chuẩn hóa theo Mục 0.4 trong Đặc tả
+LPT_BINS = [
+    ("< 0%", lambda x: x < 0),
+    ("0% ≤ … < 20%", lambda x: (x >= 0.0) & (x < 0.20)),
+    ("20% ≤ … < 50%", lambda x: (x >= 0.20) & (x < 0.50)),
+    ("50% ≤ … < 70%", lambda x: (x >= 0.50) & (x < 0.70)),
+    ("70% ≤ … < 100%", lambda x: (x >= 0.70) & (x < 1.00)),
+    ("= 100%", lambda x: x >= 1.00),
+]
+
+STANDARD_KV_ORDER = [
+    "Khu vực 1 (KV Hà Nội)",
+    "Khu vực 2 (KV Miền Bắc)",
+    "Khu vực 3 (KV Miền Trung)",
+    "Khu vực 4 (KV TPHCM)",
+    "Khu vực 5 (KV Đồng Nai)",
+    "Khu vực 6 (KV Tây Nam Bộ)",
+]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BẢNG MÀU PASTEL — MỖI KHU VỰC / ĐƠN VỊ KINH DOANH 1 MÀU ĐẠI DIỆN RIÊNG
+# ──────────────────────────────────────────────────────────────────────────────
+
+# 6 màu pastel cố định cho 6 Khu vực chuẩn — dùng xuyên suốt mọi biểu đồ so sánh theo KV
+# (khớp đúng nhãn "kv_label" được tạo ra trong compute_overview_metrics / calc_monthly_series_by_kv).
+KV_COLOR_MAP = {
+    "KV 1 (Hà Nội)": "#8b7ff5",
+    "KV 2 (Miền Bắc)": "#f472b6",
+    "KV 3 (Miền Trung)": "#fb923c",
+    "KV 4 (TPHCM)": "#60a5fa",
+    "KV 5 (Đồng Nai)": "#34d399",
+    "KV 6 (Tây Nam Bộ)": "#22d3ee",
+}
+
+# Bảng màu pastel mở rộng cho Đơn vị kinh doanh (MA_DV) — lặp vòng theo chỉ số khi số ĐVKD > 6.
+UNIT_COLOR_PALETTE = [
+    "#8b7ff5", "#f472b6", "#fb923c", "#60a5fa", "#34d399", "#22d3ee",
+    "#fbbf24", "#fb7185", "#4ade80", "#c084fc", "#38bdf8", "#fdba74",
+]
+
+# Cặp màu pastel semantic dùng cho biểu đồ phân kỳ âm/dương (thay cho đỏ/xanh đậm trước đây)
+PASTEL_POSITIVE = "#34d399"
+PASTEL_NEGATIVE = "#fb7185"
+PASTEL_TARGET_LINE = "#f43f5e"
+
+
+def get_kv_color(kv_label: str, idx: int = 0) -> str:
+    """Trả về màu pastel đại diện cho 1 Khu vực (theo nhãn hiển thị dạng 'KV n (...)')."""
+    return KV_COLOR_MAP.get(kv_label, UNIT_COLOR_PALETTE[idx % len(UNIT_COLOR_PALETTE)])
+
+
+def get_unit_color(idx: int) -> str:
+    """Trả về màu pastel đại diện cho 1 Đơn vị kinh doanh, lặp vòng theo chỉ số thứ tự."""
+    return UNIT_COLOR_PALETTE[idx % len(UNIT_COLOR_PALETTE)]
+
+
+def find_data_sheet(xls: pd.ExcelFile) -> Optional[str]:
+    """Tìm sheet 'Data import' hoặc sheet đầu tiên có SYM_RUN_DATE."""
+    for name in xls.sheet_names:
+        if name.strip().lower() == "data import":
+            return name
+    for name in xls.sheet_names:
+        try:
+            sample = pd.read_excel(xls, sheet_name=name, nrows=5)
+            if "SYM_RUN_DATE" in sample.columns:
+                return name
+        except Exception:
+            continue
+    return None
+
+
+def parse_lpt_value(val) -> Optional[float]:
+    """
+    Chuẩn hóa Hệ số LPT thực nhận thành float (0.0 - 1.0).
+    Trả về None nếu rỗng/NULL để không tính vào bất kỳ dải nào trong Bảng C.
+    """
+    if pd.isna(val):
+        return None
+    s = str(val).strip()
+    if s in ("-", "", "N/A", "nan", "None", "NULL"):
+        return None
+    s = s.replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+@st.cache_data(show_spinner="Đang đọc và phân tích dữ liệu...")
+def load_and_preprocess_excel(file_bytes: bytes) -> pd.DataFrame:
+    """Đọc và chuẩn hóa dữ liệu đầu vào theo đúng đặc tả công thức."""
+    xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
+    sheet = find_data_sheet(xls)
+    if sheet is None:
+        raise ValueError("Không tìm thấy sheet 'Data import' hoặc sheet có cột SYM_RUN_DATE.")
+
+    # Ép MA_DV đọc dạng chuỗi ngay từ đầu — tránh pandas tự suy luận sang số nguyên làm mất số 0
+    # ở đầu mã (vd '012' -> 12) đối với các mã ĐVKD dạng số.
+    df = pd.read_excel(xls, sheet_name=sheet, engine="openpyxl", dtype={"MA_DV": str})
+
+    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"Thiếu các cột bắt buộc: {', '.join(missing)}")
+
+    # Chuẩn hóa LPT: giữ NaN cho RAW, fill 0 cho tính toán thông thường
+    df["HE_SO_LPT_RAW"] = df["Hệ số LPT thực nhận"].apply(parse_lpt_value)
+    df["HE_SO_LPT"] = df["HE_SO_LPT_RAW"].fillna(0.0)
+
+    # Trích xuất thời gian
+    df["SYM_RUN_DATE"] = pd.to_datetime(df["SYM_RUN_DATE"], errors="coerce")
+    df["YEAR_MONTH"] = df["SYM_RUN_DATE"].dt.to_period("M")
+    df["THANG"] = df["SYM_RUN_DATE"].dt.month
+    df["NAM"] = df["SYM_RUN_DATE"].dt.year
+    df["THANG_STR"] = df.apply(
+        lambda r: f"T{r['THANG']:02d}/{r['NAM']}" if pd.notna(r["THANG"]) and pd.notna(r["NAM"]) else "(blank)",
+        axis=1,
+    )
+
+    # Chuẩn hóa tên KV
+    df["TEN_KV"] = df["TEN_KV"].astype(str).str.strip()
+
+    # Chuẩn hóa Mã ĐVKD: giữ nguyên dạng chuỗi, loại đuôi ".0" nếu file gốc lưu dạng số thực,
+    # và đệm lại đủ 3 chữ số cho các mã thuần số (vd '12' -> '012') — khớp đúng định dạng data_import.
+    df["MA_DV"] = df["MA_DV"].fillna("").astype(str).str.strip()
+    df["MA_DV"] = df["MA_DV"].str.replace(r"\.0$", "", regex=True)
+    df["MA_DV"] = df["MA_DV"].apply(lambda v: v.zfill(3) if v.isdigit() else v)
+
+    # Chuẩn hóa họ tên nhân sự (tầng lọc thứ 3: Khu vực -> ĐVKD -> Nhân sự)
+    df["TEN_CV"] = df["TEN_CV"].fillna("").astype(str).str.strip()
+
+    # Chuẩn hóa số lượng
+    for col in ["SL_KHDN_MOI_N", "SL_KHDN_TANG_RONG", "SL_KH_TD_TANG_RONG"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # Chuẩn hóa 16 cột số liệu cấp ĐVKD cho Khối G/H/I (xem cảnh báo dedup ở UNIT_LEVEL_NUMERIC_COLUMNS)
+    for col in UNIT_LEVEL_NUMERIC_COLUMNS:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    return df
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# XỬ LÝ TIỀN DỮ LIỆU SHEET "DATA IMPORT SỐ ĐVKD" (Dashboard số liệu toàn hàng)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Cấu trúc cột cố định theo đúng đặc tả (bảng pivot 2 dòng header, không dò tên cột động):
+# D=STT, E=STT phụ, F=Tên chỉ tiêu, G=ĐVT; I=baseline 31/12 (không dùng); J-U=Thực hiện Tháng
+# (12 tháng theo vị trí); V-AG=Kế hoạch Tháng (T1-T11 + Năm 2026 ở cuối, KHÔNG có T12);
+# AT-BD=% hoàn thành (T2-T11 + Năm 2026 ở cuối, KHÔNG có T1 và T12).
+DVKD_COL_STT = 3
+DVKD_COL_STT_PHU = 4
+DVKD_COL_TEN_CHI_TIEU = 5
+DVKD_COL_DVT = 6
+DVKD_COL_THUC_HIEN = list(range(9, 21))  # J-U
+DVKD_COL_KE_HOACH = list(range(21, 33))  # V-AG
+DVKD_COL_PCT_HT = list(range(45, 56))  # AT-BD
+
+DVKD_SECTION_TITLES = {"A. Thông tin chung", "A. Chỉ tiêu Chính", "B. Chỉ tiêu Phụ"}
+
+
+def find_data_sheet_dvkd(xls: pd.ExcelFile) -> Optional[str]:
+    """Tìm sheet 'Data import số ĐVKD' (bảng pivot 2 dòng header, số liệu toàn hàng)."""
+
+    def _norm(s: str) -> str:
+        # "Đ/đ" KHÔNG có phân rã NFD (không giống các nguyên âm có dấu khác) nên phải thay riêng.
+        s = s.replace("Đ", "D").replace("đ", "d")
+        s = unicodedata.normalize("NFD", s)
+        s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+        return s.strip().lower()
+
+    for name in xls.sheet_names:
+        if _norm(name) == "data import so dvkd":
+            return name
+    for name in xls.sheet_names:
+        norm = _norm(name)
+        if "dvkd" in norm and "data import" in norm:
+            return name
+    return None
+
+
+def _dvkd_parse_number(val) -> Optional[float]:
+    """Chuẩn hóa 1 ô số liệu trong bảng pivot ĐVKD: hỗ trợ số âm dạng ngoặc đơn '(1,234)',
+    dấu phẩy phân cách nghìn, hậu tố '%' (quy về dạng phân số), và các giá trị rỗng/lỗi."""
+    if pd.isna(val):
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if s in ("-", "", "N/A", "nan", "None", "NULL", "#N/A", "#DIV/0!"):
+        return None
+    is_negative = s.startswith("(") and s.endswith(")")
+    if is_negative:
+        s = s[1:-1].strip()
+    is_pct = s.endswith("%")
+    s = s.rstrip("%").strip().replace(",", "")
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    if is_pct:
+        v = v / 100
+    return -v if is_negative else v
+
+
+@st.cache_data(show_spinner="Đang đọc và phân tích dữ liệu số liệu toàn hàng...")
+def load_and_preprocess_dvkd_excel(file_bytes: bytes) -> list[dict]:
+    """
+    Đọc và chuẩn hóa sheet 'Data import số ĐVKD' — bảng pivot 2 dòng header, số liệu TOÀN HÀNG
+    (không có cột Khu vực/ĐVKD, không lọc được theo đơn vị). Mỗi chỉ tiêu trả về 1 dict:
+    {row_idx, section, label, dvt, thuc_hien: {1..12: v}, ke_hoach: {1..11: v}, ke_hoach_nam,
+    pct_ht: {2..11: v}, pct_ht_nam} — tháng thiếu dữ liệu không có key (UI hiển thị '—').
+    """
+    xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
+    sheet = find_data_sheet_dvkd(xls)
+    if sheet is None:
+        raise ValueError("Không tìm thấy sheet 'Data import số ĐVKD'.")
+
+    raw = pd.read_excel(xls, sheet_name=sheet, engine="openpyxl", header=None)
+
+    items = []
+    current_section = ""
+    for row_idx in range(2, len(raw)):
+        row = raw.iloc[row_idx]
+        ten_chi_tieu = row[DVKD_COL_TEN_CHI_TIEU]
+        if pd.isna(ten_chi_tieu):
+            continue
+        ten_chi_tieu = str(ten_chi_tieu).strip()
+        if not ten_chi_tieu:
+            continue
+
+        if ten_chi_tieu in DVKD_SECTION_TITLES:
+            current_section = ten_chi_tieu
+            continue
+
+        def _fmt_stt(v) -> str:
+            # STT đọc qua pandas có thể bị suy luận thành float (vd 1 -> "1.0") khi cột có
+            # lẫn ô rỗng/NaN — bỏ đuôi ".0" cho số nguyên, giữ nguyên STT phụ dạng "1.1".
+            s = str(v).strip()
+            if s.endswith(".0") and s[:-2].lstrip("-").isdigit():
+                return s[:-2]
+            return s
+
+        stt = row[DVKD_COL_STT]
+        stt_phu = row[DVKD_COL_STT_PHU]
+        if pd.notna(stt) and _fmt_stt(stt):
+            prefix = _fmt_stt(stt)
+        elif pd.notna(stt_phu) and _fmt_stt(stt_phu):
+            prefix = _fmt_stt(stt_phu)
+        else:
+            prefix = ""
+        label = f"{prefix}. {ten_chi_tieu}" if prefix else ten_chi_tieu
+
+        dvt_val = row[DVKD_COL_DVT]
+        dvt = str(dvt_val).strip() if pd.notna(dvt_val) else ""
+
+        thuc_hien = {}
+        for pos, col in enumerate(DVKD_COL_THUC_HIEN):
+            v = _dvkd_parse_number(row[col])
+            if v is not None:
+                thuc_hien[pos + 1] = v
+
+        ke_hoach = {}
+        ke_hoach_nam = None
+        for pos, col in enumerate(DVKD_COL_KE_HOACH):
+            v = _dvkd_parse_number(row[col])
+            if pos < 11:
+                if v is not None:
+                    ke_hoach[pos + 1] = v
+            else:
+                ke_hoach_nam = v
+
+        pct_ht = {}
+        pct_ht_nam = None
+        for pos, col in enumerate(DVKD_COL_PCT_HT):
+            v = _dvkd_parse_number(row[col])
+            if pos < 10:
+                if v is not None:
+                    pct_ht[pos + 2] = v
+            else:
+                pct_ht_nam = v
+
+        items.append(
+            {
+                "row_idx": row_idx,
+                "section": current_section,
+                "label": label,
+                "dvt": dvt,
+                "thuc_hien": thuc_hien,
+                "ke_hoach": ke_hoach,
+                "ke_hoach_nam": ke_hoach_nam,
+                "pct_ht": pct_ht,
+                "pct_ht_nam": pct_ht_nam,
+            }
+        )
+
+    return items
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TÍNH TOÁN KỲ N THÁNG GẦN NHẤT & GROUP KHU VỰC
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def get_monthly_periods(df: pd.DataFrame, max_n: int = 12) -> list[dict]:
+    """
+    Danh sách TỪNG THÁNG THỰC TẾ riêng lẻ (không cộng dồn/lũy kế), dùng cho 9 Khối chỉ tiêu
+    (Tab Báo cáo Khối chỉ tiêu). Mỗi phần tử {"label", "yms"} — "label" là tên tháng hiển thị
+    (vd "T03/2026"), "yms" là danh sách 1 YEAR_MONTH duy nhất ứng với tháng đó.
+    """
+    unique_yms = sorted(df["YEAR_MONTH"].dropna().unique())[-max_n:]
+    return [{"label": f"T{ym.month:02d}/{ym.year}", "yms": [ym]} for ym in unique_yms]
+
+
+def _region_groups(df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    """
+    Nhóm theo TEN_KV (không dùng MA_KV).
+    Đảm bảo 6 khu vực chuẩn được sắp xếp đúng thứ tự + 1 dòng Tổng (cộng dồn toàn bộ).
+    """
+    groups = []
+    avail = df["TEN_KV"].unique().tolist()
+    used = set()
+
+    for kv in STANDARD_KV_ORDER:
+        matched = None
+        for a in avail:
+            if a not in used:
+                if a == kv or kv.lower().startswith(a.lower()) or a.lower().startswith(kv.lower()) or kv[:9].lower() == a[:9].lower():
+                    matched = a
+                    break
+        if matched:
+            groups.append((matched, df[df["TEN_KV"] == matched]))
+            used.add(matched)
+        elif kv in avail:
+            groups.append((kv, df[df["TEN_KV"] == kv]))
+            used.add(kv)
+
+    # Các khu vực khác có trong data nếu có
+    for a in avail:
+        if a not in used:
+            groups.append((a, df[df["TEN_KV"] == a]))
+            used.add(a)
+
+    # Dòng Tổng: cộng dồn toàn bộ data (không lọc theo khu vực)
+    groups.append(("Tổng", df))
+    return groups
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TÍNH TOÁN 6 KHỐI CHỈ TIÊU (Đặc tả công thức mục 3)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def calc_block1(df: pd.DataFrame, periods: Optional[list] = None) -> pd.DataFrame:
+    """BẢNG A — Tỷ lệ đạt KPIs (theo từng tháng thực tế)."""
+    if periods is None:
+        periods = get_monthly_periods(df)
+    groups = _region_groups(df)
+    rows = []
+    for kv_name, subset in groups:
+        row = {"Khu vực": kv_name}
+        for p in periods:
+            sm = subset[subset["YEAR_MONTH"].isin(p["yms"])]
+            tot = len(sm)
+            dat = len(sm[sm["KET_QUA_KPIS"] == "DAT_KPIS"])
+            pct = (dat / tot * 100) if tot > 0 else 0.0
+            col_key = p["label"]
+            row[("Tổng NS đánh giá KPIs", col_key)] = tot
+            row[("SL nhân sự đạt KPIs", col_key)] = dat
+            row[("% nhân sự đạt KPIs", col_key)] = round(pct, 1)
+        rows.append(row)
+
+    res = pd.DataFrame(rows).set_index("Khu vực")
+    res.columns = pd.MultiIndex.from_tuples(res.columns)
+    return res
+
+
+def calc_block2(df: pd.DataFrame, periods: Optional[list] = None) -> pd.DataFrame:
+    """BẢNG B — Tỷ lệ thỏa LPT (theo từng tháng thực tế)."""
+    if periods is None:
+        periods = get_monthly_periods(df)
+    groups = _region_groups(df)
+    rows = []
+    for kv_name, subset in groups:
+        row = {"Khu vực": kv_name}
+        for p in periods:
+            sm = subset[subset["YEAR_MONTH"].isin(p["yms"])]
+            tot = len(sm)
+            thoa = len(sm[sm["KET_QUA_LPT"] == "THOA_LPT"])
+            pct = (thoa / tot * 100) if tot > 0 else 0.0
+            col_key = p["label"]
+            row[("Tổng NS đánh giá KPIs", col_key)] = tot
+            row[("SL nhân sự thỏa LPT", col_key)] = thoa
+            row[("% nhân sự thỏa LPT", col_key)] = round(pct, 1)
+        rows.append(row)
+
+    res = pd.DataFrame(rows).set_index("Khu vực")
+    res.columns = pd.MultiIndex.from_tuples(res.columns)
+    return res
+
+
+def calc_block3(df: pd.DataFrame, periods: Optional[list] = None) -> pd.DataFrame:
+    """BẢNG C — Phân bổ 6 dải Hệ số LPT thực nhận (NULL không tính vào dải nào; theo từng tháng thực tế)."""
+    if periods is None:
+        periods = get_monthly_periods(df)
+    groups = _region_groups(df)
+    rows = []
+    for kv_name, subset in groups:
+        row = {"Khu vực": kv_name}
+        for p in periods:
+            sm = subset[subset["YEAR_MONTH"].isin(p["yms"])]
+            vals = sm["HE_SO_LPT_RAW"].dropna()
+            col_key = p["label"]
+            for label, cond_fn in LPT_BINS:
+                row[(label, col_key)] = int(cond_fn(vals).sum())
+        rows.append(row)
+
+    res = pd.DataFrame(rows).set_index("Khu vực")
+    res.columns = pd.MultiIndex.from_tuples(res.columns)
+    return res
+
+
+def _calc_block_kh(df: pd.DataFrame, sum_col: str, metric_name: str, periods: Optional[list] = None) -> pd.DataFrame:
+    """Helper cho Bảng D, E, F: Mẫu số COUNT(DISTINCT MA_DV), Tử số SUM (theo từng tháng thực tế)."""
+    if periods is None:
+        periods = get_monthly_periods(df)
+    groups = _region_groups(df)
+    rows = []
+    for kv_name, subset in groups:
+        row = {"Khu vực": kv_name}
+        for p in periods:
+            sm = subset[subset["YEAR_MONTH"].isin(p["yms"])]
+            n_dv = sm["MA_DV"].nunique()
+            total = int(sm[sum_col].sum())
+            avg = (total / n_dv) if n_dv > 0 else 0.0
+            col_key = p["label"]
+            row[("Tổng ĐVKD", col_key)] = n_dv
+            row[(f"Tổng {metric_name}", col_key)] = total
+            row[(f"{metric_name} / ĐVKD", col_key)] = round(avg, 1)
+        rows.append(row)
+
+    res = pd.DataFrame(rows).set_index("Khu vực")
+    res.columns = pd.MultiIndex.from_tuples(res.columns)
+    return res
+
+
+def calc_block4(df: pd.DataFrame, periods: Optional[list] = None) -> pd.DataFrame:
+    """BẢNG D — % phát triển KHDN mới / ĐVKD."""
+    return _calc_block_kh(df, "SL_KHDN_MOI_N", "KHDN mới", periods)
+
+
+def calc_block5(df: pd.DataFrame, periods: Optional[list] = None) -> pd.DataFrame:
+    """BẢNG E — % phát triển KHTD tăng ròng / ĐVKD (SUM SL_KH_TD_TANG_RONG)."""
+    return _calc_block_kh(df, "SL_KH_TD_TANG_RONG", "KHTD tăng ròng", periods)
+
+
+def calc_block6(df: pd.DataFrame, periods: Optional[list] = None) -> pd.DataFrame:
+    """BẢNG F — % phát triển KHDN tăng ròng / ĐVKD (SUM SL_KHDN_TANG_RONG)."""
+    return _calc_block_kh(df, "SL_KHDN_TANG_RONG", "KHDN tăng ròng", periods)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TÍNH TOÁN 3 KHỐI CHỈ TIÊU MỚI G/H/I (Dư nợ / Huy động / TOI) — CẤP ĐƠN VỊ (ĐVKD)
+# ──────────────────────────────────────────────────────────────────────────────
+# ⚠️ CẢNH BÁO DỮ LIỆU QUAN TRỌNG: 16 cột nguồn của Khối G/H/I (UNIT_LEVEL_NUMERIC_COLUMNS) là
+# giá trị CẤP ĐVKD nhưng bị LẶP LẠI y hệt trên MỌI dòng nhân sự cùng 1 (MA_DV, SYM_RUN_DATE).
+# TUYỆT ĐỐI KHÔNG SUM trực tiếp theo dòng như các cột cấp-nhân-sự của Khối A-F (sẽ nhân sai giá
+# trị lên gấp N lần, N = số nhân sự của ĐVKD đó trong tháng). LUÔN dùng agg_unit_level_metric()
+# (dedup theo MA_DV+SYM_RUN_DATE trước khi sum) cho 16 cột này — không tự ý đổi lại thành .sum().
+
+TOI_SOURCE_COLS = {
+    "TOI huy động": "DU_CHI_HUY_DONG",
+    "TOI cho vay": "DU_THU_CHO_VAY",
+    "TOI thu thanh toán": "THU_TU_THANH_TOAN",
+    "TOI QLTM": "THU_QUAN_LY_TIEN_MAT",
+    "TOI ngân quỹ": "THU_NGAN_QUY",
+    "TOI ngân hàng điện tử": "THU_NGAN_HANG_DIEN_TU",
+    "TOI TTTM": "THU_TAI_TRO_THUONG_MAI",
+    "TOI bảo lãnh": "THU_BAO_LANH",
+    "TOI tín dụng": "THU_TIN_DUNG",
+    "TOI MBNT": "THU_MUA_BAN_NGOAI_TE",
+}
+
+
+def agg_unit_level_metric(df: pd.DataFrame, col: str) -> float:
+    """
+    Cộng 1 cột giá trị CẤP ĐVKD — BẮT BUỘC dedup theo (MA_DV, SYM_RUN_DATE) TRƯỚC khi sum, vì
+    giá trị bị lặp lại y hệt trên mọi dòng nhân sự cùng ĐVKD/tháng (xem cảnh báo phía trên).
+    """
+    dedup = df.drop_duplicates(subset=["MA_DV", "SYM_RUN_DATE"])
+    return float(pd.to_numeric(dedup[col], errors="coerce").fillna(0).sum())
+
+
+def _calc_block_unit_level(df: pd.DataFrame, periods: list[dict], metric_cols: dict[str, str]) -> pd.DataFrame:
+    """
+    Khung tính dùng chung cho Khối G/H/I: HÀNG = Khu vực + Tổng (như A-F), CỘT = MultiIndex
+    (tên chỉ số, tháng). Mỗi chỉ số trong metric_cols PHẢI qua agg_unit_level_metric (dedup) —
+    không SUM trực tiếp (xem cảnh báo ở đầu Mục này).
+    """
+    groups = _region_groups(df)
+    rows = []
+    for kv_name, subset in groups:
+        row = {"Khu vực": kv_name}
+        for p in periods:
+            sm = subset[subset["YEAR_MONTH"].isin(p["yms"])]
+            for metric_name, col in metric_cols.items():
+                row[(metric_name, p["label"])] = round(agg_unit_level_metric(sm, col), 2)
+        rows.append(row)
+
+    res = pd.DataFrame(rows).set_index("Khu vực")
+    res.columns = pd.MultiIndex.from_tuples(res.columns)
+    return res
+
+
+def calc_block7(df: pd.DataFrame, periods: Optional[list] = None) -> pd.DataFrame:
+    """KHỐI G — Chi tiết dư nợ: Tổng cho vay tháng N/N-1, Tăng ròng cho vay (cấp ĐVKD, đã dedup)."""
+    if periods is None:
+        periods = get_monthly_periods(df)
+    return _calc_block_unit_level(df, periods, {
+        "Tổng cho vay tháng N": "TONG_CV_THANG_N",
+        "Tổng cho vay tháng N-1": "TONG_CV_THANG_N_1",
+        "Tăng ròng cho vay": "TANG_RONG_CV",
+    })
+
+
+def calc_block8(df: pd.DataFrame, periods: Optional[list] = None) -> pd.DataFrame:
+    """KHỐI H — Chi tiết huy động: Tổng huy động tháng N/N-1, Tăng ròng huy động (cấp ĐVKD, đã dedup)."""
+    if periods is None:
+        periods = get_monthly_periods(df)
+    return _calc_block_unit_level(df, periods, {
+        "Tổng huy động tháng N": "TONG_HD_THANG_N",
+        "Tổng huy động tháng N-1": "TONG_HD_THANG_N_1",
+        "Tăng ròng huy động": "TANG_RONG_HD",
+    })
+
+
+def calc_block9(df: pd.DataFrame, periods: Optional[list] = None) -> pd.DataFrame:
+    """KHỐI I — Chi tiết TOI: 10 nguồn thu (cấp ĐVKD, đã dedup) + Tổng TOI = SUM 10 dòng trên."""
+    if periods is None:
+        periods = get_monthly_periods(df)
+    res = _calc_block_unit_level(df, periods, TOI_SOURCE_COLS)
+    for p in periods:
+        res[("Tổng TOI", p["label"])] = sum(res[(name, p["label"])] for name in TOI_SOURCE_COLS)
+    return res
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TỔNG HỢP CHỈ SỐ METRICS TỔNG QUAN TỪ DỮ LIỆU THẬT
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def apply_thang_filter(
+    df: pd.DataFrame,
+    thang_filter: str,
+    unique_yms: Optional[list] = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    """
+    Lọc dữ liệu theo bộ lọc SỐ THÁNG (theo tháng cụ thể) đang chọn.
+    Trả về (df_thang, prev_df, prev_date_str) để dùng chung cho KPI, biểu đồ và drill-down.
+    """
+    if unique_yms is None:
+        unique_yms = sorted(df["YEAR_MONTH"].dropna().unique())
+
+    df_thang = df
+    prev_df = pd.DataFrame()
+    prev_date_str = "Toàn bộ"
+
+    if thang_filter and thang_filter not in ("(blank)", ALL_MONTHS_LABEL):
+        df_thang = df[df["THANG_STR"] == thang_filter]
+        if not df_thang.empty:
+            curr_ym = df_thang["YEAR_MONTH"].iloc[0]
+            if curr_ym in unique_yms:
+                idx = unique_yms.index(curr_ym)
+                if idx > 0:
+                    prev_ym = unique_yms[idx - 1]
+                    prev_df = df[df["YEAR_MONTH"] == prev_ym]
+                    prev_date_str = f"T{prev_ym.month:02d}/{prev_ym.year}"
+    return df_thang, prev_df, prev_date_str
+
+
+def kv_full_to_label(kv_full: str) -> str:
+    """Chuyển tên đầy đủ 'Khu vực N (KV Xyz)' -> nhãn hiển thị ngắn 'KV N (Xyz)' dùng trên mọi biểu đồ."""
+    return (
+        kv_full.replace("Khu vực ", "KV ")
+        .replace("KV Hà Nội", "Hà Nội")
+        .replace("KV Miền Bắc", "Miền Bắc")
+        .replace("KV Miền Trung", "Miền Trung")
+        .replace("KV TPHCM", "TPHCM")
+        .replace("KV Đồng Nai", "Đồng Nai")
+        .replace("KV Tây Nam Bộ", "Tây Nam Bộ")
+    )
+
+
+def apply_kv_filter(df: pd.DataFrame, kv_filter: str) -> pd.DataFrame:
+    """Lọc dữ liệu theo bộ lọc KHU VỰC đang chọn (nút KV1 -> KV6)."""
+    if not kv_filter or kv_filter == "(blank)":
+        return df
+    target = kv_filter.replace("KV ", "Khu vực ").replace("KV", "Khu vực ")
+    return df[
+        df["TEN_KV"].str.contains(target, case=False, na=False)
+        | (df["TEN_KV"] == kv_filter)
+        | (df["MA_KV"].astype(str) == kv_filter)
+    ]
+
+
+def apply_ma_dv_filter(df: pd.DataFrame, ma_dv_filter: Optional[list] = None) -> pd.DataFrame:
+    """Lọc dữ liệu theo danh sách MA_DV đang chọn (đa lựa chọn trong Slicer KHU VỰC sau khi chọn 1 KV)."""
+    if not ma_dv_filter:
+        return df
+    return df[df["MA_DV"].isin(ma_dv_filter)]
+
+
+def apply_nhan_su_filter(df: pd.DataFrame, ns_filter: Optional[list] = None) -> pd.DataFrame:
+    """Lọc dữ liệu theo danh sách TEN_CV đang chọn — tầng lọc thứ 3 (Khu vực -> ĐVKD -> Nhân sự)."""
+    if not ns_filter:
+        return df
+    return df[df["TEN_CV"].isin(ns_filter)]
+
+
+def get_kv_units(df: pd.DataFrame, kv_filter: str) -> list[tuple[str, str]]:
+    """Danh sách (MA_DV, TEN_DV) duy nhất trong 1 Khu vực, sắp xếp theo MA_DV."""
+    d = apply_kv_filter(df, kv_filter)
+    if d.empty:
+        return []
+    pairs = d[["MA_DV", "TEN_DV"]].drop_duplicates().sort_values("MA_DV")
+    return list(pairs.itertuples(index=False, name=None))
+
+
+def get_dv_staff(df: pd.DataFrame, kv_filter: str, ma_dv_filter: Optional[list] = None) -> list[str]:
+    """Danh sách TEN_CV duy nhất, đã sort, trong phạm vi Khu vực + ĐVKD đang chọn."""
+    d = apply_ma_dv_filter(apply_kv_filter(df, kv_filter), ma_dv_filter)
+    if d.empty:
+        return []
+    names = d["TEN_CV"].dropna().astype(str).str.strip()
+    return sorted(n for n in names.unique() if n)
+
+
+def compute_overview_metrics(
+    df: pd.DataFrame,
+    kv_filter: str = "",
+    thang_filter: str = "",
+    chi_tieu_filter: str = "",
+    ma_dv_filter: Optional[list] = None,
+    ns_filter: Optional[list] = None,
+) -> dict:
+    """
+    Tính toán các chỉ số trên 6 thẻ KPI & các biểu đồ từ dữ liệu thật.
+    - Donut & các Bar Chart theo Khu vực: LUÔN tính trên toàn bộ data theo kỳ tháng đang chọn (không bị lọc theo KV).
+    - 6 Thẻ KPI Pill: tính theo kỳ tháng, khu vực VÀ đơn vị kinh doanh đang chọn (nếu có).
+    - Delta: so sánh với kỳ (N-1)T hoặc tháng liền trước (không hardcode, in log ra console).
+    """
+    unique_yms = sorted(df["YEAR_MONTH"].dropna().unique())
+
+    # 1. Lọc theo SỐ THÁNG (theo tháng cụ thể) trên TOÀN BỘ DATA (dùng cho Donut & các Bar Chart theo KV)
+    df_thang, prev_df_thang, prev_date_str = apply_thang_filter(df, thang_filter, unique_yms)
+
+    # 2. TÍNH TOÁN 3 BIỂU ĐỒ (LUÔN TÍNH TRÊN TOÀN BỘ DATA ĐÃ LỌC THEO THÁNG - KHÔNG LỌC THEO KV)
+    # Donut Chart: Toàn hàng
+    donut_dat = len(df_thang[df_thang["KET_QUA_KPIS"] == "DAT_KPIS"])
+    donut_khong_dat = len(df_thang) - donut_dat
+
+    # 2 Bar Charts: Luôn đủ 6 Khu vực chuẩn
+    kv_charts = []
+    for kv in STANDARD_KV_ORDER:
+        matched_df = df_thang[df_thang["TEN_KV"] == kv]
+        if matched_df.empty:
+            for a in df_thang["TEN_KV"].unique():
+                if kv[:9].lower() == a[:9].lower():
+                    matched_df = df_thang[df_thang["TEN_KV"] == a]
+                    break
+
+        kv_tot = len(matched_df)
+        kv_dat = len(matched_df[matched_df["KET_QUA_KPIS"] == "DAT_KPIS"]) if kv_tot > 0 else 0
+        kv_pct_dat = (kv_dat / kv_tot * 100) if kv_tot > 0 else 0.0
+
+        kv_thoa = len(matched_df[matched_df["KET_QUA_LPT"] == "THOA_LPT"]) if kv_tot > 0 else 0
+        kv_pct_thoa = (kv_thoa / kv_tot * 100) if kv_tot > 0 else 0.0
+
+        # Bảng D/E/F: mẫu số COUNT(DISTINCT MA_DV), tử số SUM, chỉ tiêu bình quân/ĐVKD
+        n_dv = matched_df["MA_DV"].nunique() if kv_tot > 0 else 0
+        khdn_moi_sum = int(matched_df["SL_KHDN_MOI_N"].sum()) if kv_tot > 0 else 0
+        avg_khdn_moi = (khdn_moi_sum / n_dv) if n_dv > 0 else 0.0
+        khtd_tang_sum = int(matched_df["SL_KH_TD_TANG_RONG"].sum()) if kv_tot > 0 else 0
+        avg_khtd_tang = (khtd_tang_sum / n_dv) if n_dv > 0 else 0.0
+        khdn_tang_sum = int(matched_df["SL_KHDN_TANG_RONG"].sum()) if kv_tot > 0 else 0
+        avg_khdn_tang = (khdn_tang_sum / n_dv) if n_dv > 0 else 0.0
+
+        # Khối G/H/I: giá trị CẤP ĐVKD — BẮT BUỘC dùng agg_unit_level_metric (dedup theo
+        # MA_DV+SYM_RUN_DATE trước khi sum), KHÔNG dùng .sum() trực tiếp như các cột trên.
+        tong_cv_n_sum = agg_unit_level_metric(matched_df, "TONG_CV_THANG_N") if kv_tot > 0 else 0.0
+        tang_rong_cv_sum = agg_unit_level_metric(matched_df, "TANG_RONG_CV") if kv_tot > 0 else 0.0
+        tong_hd_n_sum = agg_unit_level_metric(matched_df, "TONG_HD_THANG_N") if kv_tot > 0 else 0.0
+        tang_rong_hd_sum = agg_unit_level_metric(matched_df, "TANG_RONG_HD") if kv_tot > 0 else 0.0
+        tong_toi_sum = (
+            sum(agg_unit_level_metric(matched_df, col) for col in TOI_SOURCE_COLS.values()) if kv_tot > 0 else 0.0
+        )
+
+        # Bảng C: % phân bổ 6 dải Hệ số LPT thực nhận (NULL gộp thành "Chưa xác định")
+        lpt_vals = matched_df["HE_SO_LPT_RAW"].dropna() if kv_tot > 0 else pd.Series(dtype=float)
+        lpt_bin_pct = {}
+        for label, cond_fn in LPT_BINS:
+            cnt = int(cond_fn(lpt_vals).sum()) if kv_tot > 0 else 0
+            lpt_bin_pct[label] = round((cnt / kv_tot * 100) if kv_tot > 0 else 0.0, 1)
+        null_cnt = kv_tot - len(lpt_vals)
+        lpt_bin_pct["Chưa xác định"] = round((null_cnt / kv_tot * 100) if kv_tot > 0 else 0.0, 1)
+
+        kv_label = kv_full_to_label(kv)
+
+        kv_charts.append({
+            "kv_full": kv,
+            "kv_label": kv_label,
+            "pct_dat": round(kv_pct_dat, 1),
+            "pct_thoa": round(kv_pct_thoa, 1),
+            "khdn_moi_sum": khdn_moi_sum,
+            "avg_khdn_moi": round(avg_khdn_moi, 1),
+            "khtd_tang_sum": khtd_tang_sum,
+            "avg_khtd_tang": round(avg_khtd_tang, 1),
+            "khdn_tang_sum": khdn_tang_sum,
+            "avg_khdn_tang": round(avg_khdn_tang, 1),
+            "lpt_bin_pct": lpt_bin_pct,
+            "tong_cv_n_sum": round(tong_cv_n_sum, 2),
+            "tang_rong_cv_sum": round(tang_rong_cv_sum, 2),
+            "tong_hd_n_sum": round(tong_hd_n_sum, 2),
+            "tang_rong_hd_sum": round(tang_rong_hd_sum, 2),
+            "tong_toi_sum": round(tong_toi_sum, 2),
+        })
+
+    # 3. TÍNH TOÁN 6 THẺ KPI PILL (ÁP DỤNG KV FILTER + ĐVKD FILTER + NHÂN SỰ FILTER NẾU CÓ)
+    curr_df = apply_nhan_su_filter(apply_ma_dv_filter(apply_kv_filter(df_thang, kv_filter), ma_dv_filter), ns_filter)
+    prev_df = (
+        apply_nhan_su_filter(apply_ma_dv_filter(apply_kv_filter(prev_df_thang, kv_filter), ma_dv_filter), ns_filter)
+        if not prev_df_thang.empty
+        else prev_df_thang.copy()
+    )
+
+    tot_ns = len(curr_df)
+    dat_kpi = len(curr_df[curr_df["KET_QUA_KPIS"] == "DAT_KPIS"])
+    pct_dat = (dat_kpi / tot_ns * 100) if tot_ns > 0 else 0.0
+    kdat_kpi = tot_ns - dat_kpi
+    pct_kdat = (kdat_kpi / tot_ns * 100) if tot_ns > 0 else 0.0
+
+    thoa_lpt = len(curr_df[curr_df["KET_QUA_LPT"] == "THOA_LPT"])
+    pct_thoa = (thoa_lpt / tot_ns * 100) if tot_ns > 0 else 0.0
+
+    tot_dv = curr_df["MA_DV"].nunique() if tot_ns > 0 else 0
+    tot_khdn_moi = int(curr_df["SL_KHDN_MOI_N"].sum()) if tot_ns > 0 else 0
+    avg_khdn_moi = (tot_khdn_moi / tot_dv) if tot_dv > 0 else 0.0
+
+    tot_khtd_tang = int(curr_df["SL_KH_TD_TANG_RONG"].sum()) if tot_ns > 0 else 0
+    avg_khtd_tang = (tot_khtd_tang / tot_dv) if tot_dv > 0 else 0.0
+
+    tot_khdn_tang = int(curr_df["SL_KHDN_TANG_RONG"].sum()) if tot_ns > 0 else 0
+    avg_khdn_tang = (tot_khdn_tang / tot_dv) if tot_dv > 0 else 0.0
+
+    # 4. Tính Delta so với prev_df (so sánh kỳ trước)
+    def _calc_delta(curr_val, prev_val):
+        if prev_df.empty or prev_val is None:
+            return "—"
+        diff = curr_val - prev_val
+        pct = (diff / abs(prev_val) * 100) if prev_val != 0 else 0.0
+        sign = "▲" if diff >= 0 else "▼"
+        fmt_diff = f"{abs(diff):,}".replace(",", ".")
+        return f"{sign} {fmt_diff} ({pct:+.1f}%)"
+
+    p_ns = len(prev_df) if not prev_df.empty else None
+    p_dat = len(prev_df[prev_df["KET_QUA_KPIS"] == "DAT_KPIS"]) if not prev_df.empty else None
+    p_thoa = len(prev_df[prev_df["KET_QUA_LPT"] == "THOA_LPT"]) if not prev_df.empty else None
+    p_dv = prev_df["MA_DV"].nunique() if not prev_df.empty else None
+    p_moi = int(prev_df["SL_KHDN_MOI_N"].sum()) if not prev_df.empty else None
+    p_td = int(prev_df["SL_KH_TD_TANG_RONG"].sum()) if not prev_df.empty else None
+
+    delta_ns = _calc_delta(tot_ns, p_ns)
+    delta_dat = _calc_delta(dat_kpi, p_dat)
+    delta_thoa = _calc_delta(thoa_lpt, p_thoa)
+    delta_dv = _calc_delta(tot_dv, p_dv)
+    delta_moi = _calc_delta(tot_khdn_moi, p_moi)
+    delta_td = _calc_delta(tot_khtd_tang, p_td)
+
+    # In log chi tiết ra console để kiểm tra tử số / mẫu số
+    try:
+        print(f"[KPI LOG] THANG='{thang_filter or 'All'}', KV='{kv_filter or 'All'}'")
+        print(f"  Curr: NS={tot_ns}, Đạt={dat_kpi}/{tot_ns} ({pct_dat:.1f}%), Thỏa={thoa_lpt}/{tot_ns} ({pct_thoa:.1f}%), ĐVKD={tot_dv}, KHDN_moi={tot_khdn_moi}, KHTD={tot_khtd_tang}")
+        if not prev_df.empty:
+            print(f"  Prev ({prev_date_str}): NS={p_ns}, Đạt={p_dat}, Thỏa={p_thoa}, ĐVKD={p_dv}, KHDN_moi={p_moi}, KHTD={p_td}")
+            print(f"  Delta: NS={delta_ns}, Đạt={delta_dat}, Thỏa={delta_thoa}, ĐVKD={delta_dv}, KHDN_moi={delta_moi}, KHTD={delta_td}")
+        else:
+            print("  Prev: Không có (xem toàn bộ hoặc không đủ data so sánh) -> Delta = '—'")
+    except Exception:
+        pass
+
+    max_date = curr_df["SYM_RUN_DATE"].max() if not curr_df.empty else df["SYM_RUN_DATE"].max()
+    run_date_str = max_date.strftime("%d/%m/%Y") if pd.notna(max_date) else "31/07/2026"
+
+    return {
+        "run_date": run_date_str,
+        "prev_date": prev_date_str,
+        "total_personnel": tot_ns,
+        "delta_personnel": delta_ns,
+        "kpi_dat": dat_kpi,
+        "pct_kpi_dat": round(pct_dat, 1),
+        "delta_kpi_dat": delta_dat,
+        "kpi_khong_dat": kdat_kpi,
+        "pct_kpi_khong_dat": round(pct_kdat, 1),
+        "thoa_lpt": thoa_lpt,
+        "pct_thoa_lpt": round(pct_thoa, 1),
+        "delta_thoa_lpt": delta_thoa,
+        "total_dvkd": tot_dv,
+        "delta_dvkd": delta_dv,
+        "total_khdn_moi": tot_khdn_moi,
+        "avg_khdn_moi": round(avg_khdn_moi, 1),
+        "delta_khdn_moi": delta_moi,
+        "total_khtd_tang": tot_khtd_tang,
+        "avg_khtd_tang": round(avg_khtd_tang, 1),
+        "delta_khtd_tang": delta_td,
+        "total_khdn_tang": tot_khdn_tang,
+        "avg_khdn_tang": round(avg_khdn_tang, 1),
+        "donut_kpi_dat": donut_dat,
+        "donut_kpi_khong_dat": donut_khong_dat,
+        "kv_charts": kv_charts,
+    }
+
+
+def calc_monthly_trend(
+    df: pd.DataFrame,
+    kv_filter: str = "",
+    ma_dv_filter: Optional[list] = None,
+    ns_filter: Optional[list] = None,
+) -> pd.DataFrame:
+    """
+    Xu hướng % đạt KPIs & % thỏa LPT theo TỪNG THÁNG THỰC TẾ (không lũy kế), sắp xếp theo thời gian.
+    Dùng cho biểu đồ đường (Line Chart) — khác bản chất với các Bảng A-F vốn tính theo kỳ lũy kế N tháng.
+    """
+    d = apply_nhan_su_filter(apply_ma_dv_filter(apply_kv_filter(df, kv_filter), ma_dv_filter), ns_filter)
+    rows = []
+    for ym, sub in d.groupby("YEAR_MONTH"):
+        if pd.isna(ym):
+            continue
+        tot = len(sub)
+        dat = len(sub[sub["KET_QUA_KPIS"] == "DAT_KPIS"])
+        thoa = len(sub[sub["KET_QUA_LPT"] == "THOA_LPT"])
+        rows.append({
+            "YEAR_MONTH": ym,
+            "THANG_STR": sub["THANG_STR"].iloc[0] if not sub.empty else str(ym),
+            "pct_dat": round(dat / tot * 100, 1) if tot > 0 else 0.0,
+            "pct_thoa": round(thoa / tot * 100, 1) if tot > 0 else 0.0,
+            "tot_ns": tot,
+        })
+    if not rows:
+        return pd.DataFrame(columns=["YEAR_MONTH", "THANG_STR", "pct_dat", "pct_thoa", "tot_ns"])
+    return pd.DataFrame(rows).sort_values("YEAR_MONTH").reset_index(drop=True)
+
+
+# Ánh xạ Khối chỉ tiêu -> tên cột trong DataFrame dài (long-form) trả về bởi
+# calc_monthly_series_by_kv() / calc_monthly_series_by_unit(), dùng cho chế độ "Tất cả các tháng"
+# (so sánh biến động nhiều tháng cùng lúc, thay cho 1 biểu đồ snapshot theo kỳ/tháng đang chọn).
+CHI_TIEU_TREND_META = {
+    "Tỷ lệ đạt KPIs": {"kv_key": "pct_dat", "unit_key": "pct_dat", "suffix": "%", "title": "TỶ LỆ ĐẠT KPIs"},
+    "Tỷ lệ thỏa LPT": {"kv_key": "pct_thoa", "unit_key": "pct_thoa", "suffix": "%", "title": "TỶ LỆ THỎA LƯƠNG PHỤ TRỘI"},
+    "Phân bổ dải LPT thực nhận": {"kv_key": "lpt_tb", "unit_key": "lpt_tb", "suffix": "%", "title": "HỆ SỐ LPT THỰC NHẬN BÌNH QUÂN"},
+    "KHDN mới/ĐVKD": {"kv_key": "avg_khdn_moi", "unit_key": "khdn_moi", "suffix": "", "title": "KHDN MỚI"},
+    "KHTD tăng ròng/ĐVKD": {"kv_key": "avg_khtd_tang", "unit_key": "khtd_tang", "suffix": "", "title": "KHTD TĂNG RÒNG"},
+    "KHDN tăng ròng/ĐVKD": {"kv_key": "avg_khdn_tang", "unit_key": "khdn_tang", "suffix": "", "title": "KHDN TĂNG RÒNG"},
+    "Chi tiết dư nợ": {"kv_key": "tong_cv_n", "unit_key": "tong_cv_n", "suffix": "", "title": "TỔNG CHO VAY THÁNG N"},
+    "Chi tiết huy động": {"kv_key": "tong_hd_n", "unit_key": "tong_hd_n", "suffix": "", "title": "TỔNG HUY ĐỘNG THÁNG N"},
+    "Chi tiết TOI": {"kv_key": "tong_toi", "unit_key": "tong_toi", "suffix": "", "title": "TỔNG TOI"},
+}
+DEFAULT_TREND_META = {"kv_key": "pct_dat", "unit_key": "pct_dat", "suffix": "%", "title": "TỶ LỆ ĐẠT KPIs"}
+
+
+def calc_monthly_series_by_kv(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Chuỗi thời gian theo TỪNG THÁNG THỰC TẾ cho MỖI Khu vực (6 KV) — DataFrame dài (long-form),
+    dùng khi bật 'Tất cả các tháng' để so sánh biến động của 1 chỉ tiêu giữa các Khu vực qua nhiều tháng.
+    """
+    unique_yms = sorted(df["YEAR_MONTH"].dropna().unique())
+    rows = []
+    for ym in unique_yms:
+        month_df = df[df["YEAR_MONTH"] == ym]
+        thang_str = month_df["THANG_STR"].iloc[0] if not month_df.empty else str(ym)
+        for kv_name, subset in _region_groups(month_df):
+            if kv_name == "Tổng":
+                continue
+            tot = len(subset)
+            dat = len(subset[subset["KET_QUA_KPIS"] == "DAT_KPIS"])
+            thoa = len(subset[subset["KET_QUA_LPT"] == "THOA_LPT"])
+            n_dv = subset["MA_DV"].nunique()
+            khdn_moi = int(subset["SL_KHDN_MOI_N"].sum())
+            khtd_tang = int(subset["SL_KH_TD_TANG_RONG"].sum())
+            khdn_tang = int(subset["SL_KHDN_TANG_RONG"].sum())
+            lpt_vals = subset["HE_SO_LPT_RAW"].dropna()
+            rows.append({
+                "YEAR_MONTH": ym,
+                "THANG_STR": thang_str,
+                "kv_label": kv_full_to_label(kv_name),
+                "pct_dat": round(dat / tot * 100, 1) if tot > 0 else 0.0,
+                "pct_thoa": round(thoa / tot * 100, 1) if tot > 0 else 0.0,
+                "avg_khdn_moi": round(khdn_moi / n_dv, 1) if n_dv > 0 else 0.0,
+                "avg_khtd_tang": round(khtd_tang / n_dv, 1) if n_dv > 0 else 0.0,
+                "avg_khdn_tang": round(khdn_tang / n_dv, 1) if n_dv > 0 else 0.0,
+                "lpt_tb": round(lpt_vals.mean() * 100, 1) if not lpt_vals.empty else None,
+                "tong_cv_n": round(agg_unit_level_metric(subset, "TONG_CV_THANG_N"), 2),
+                "tang_rong_cv": round(agg_unit_level_metric(subset, "TANG_RONG_CV"), 2),
+                "tong_hd_n": round(agg_unit_level_metric(subset, "TONG_HD_THANG_N"), 2),
+                "tang_rong_hd": round(agg_unit_level_metric(subset, "TANG_RONG_HD"), 2),
+                "tong_toi": round(sum(agg_unit_level_metric(subset, c) for c in TOI_SOURCE_COLS.values()), 2),
+            })
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("YEAR_MONTH").reset_index(drop=True)
+
+
+def calc_monthly_series_by_unit(
+    df: pd.DataFrame,
+    kv_filter: str,
+    ma_dv_filter: Optional[list] = None,
+    ns_filter: Optional[list] = None,
+) -> pd.DataFrame:
+    """
+    Chuỗi thời gian theo TỪNG THÁNG THỰC TẾ cho MỖI Đơn vị kinh doanh (MA_DV) trong 1 Khu vực đã chọn —
+    DataFrame dài (long-form), dùng khi bật 'Tất cả các tháng' để so sánh biến động giữa các ĐVKD.
+    Nếu có `ma_dv_filter` (đa lựa chọn), chỉ tính cho các ĐVKD đó thay vì toàn bộ ĐVKD trong Khu vực.
+    """
+    d = apply_nhan_su_filter(apply_ma_dv_filter(apply_kv_filter(df, kv_filter), ma_dv_filter), ns_filter)
+    unique_yms = sorted(d["YEAR_MONTH"].dropna().unique())
+    rows = []
+    for ym in unique_yms:
+        month_df = d[d["YEAR_MONTH"] == ym]
+        thang_str = month_df["THANG_STR"].iloc[0] if not month_df.empty else str(ym)
+        for (ma_dv, ten_dv), sub in month_df.groupby(["MA_DV", "TEN_DV"], sort=True):
+            tot = len(sub)
+            dat = len(sub[sub["KET_QUA_KPIS"] == "DAT_KPIS"])
+            thoa = len(sub[sub["KET_QUA_LPT"] == "THOA_LPT"])
+            lpt_vals = sub["HE_SO_LPT_RAW"].dropna()
+            rows.append({
+                "YEAR_MONTH": ym,
+                "THANG_STR": thang_str,
+                "unit_label": f"{ma_dv} - {ten_dv}",
+                "pct_dat": round(dat / tot * 100, 1) if tot > 0 else 0.0,
+                "pct_thoa": round(thoa / tot * 100, 1) if tot > 0 else 0.0,
+                "khdn_moi": int(sub["SL_KHDN_MOI_N"].sum()),
+                "khtd_tang": int(sub["SL_KH_TD_TANG_RONG"].sum()),
+                "khdn_tang": int(sub["SL_KHDN_TANG_RONG"].sum()),
+                "lpt_tb": round(lpt_vals.mean() * 100, 1) if not lpt_vals.empty else None,
+                "tong_cv_n": round(agg_unit_level_metric(sub, "TONG_CV_THANG_N"), 2),
+                "tang_rong_cv": round(agg_unit_level_metric(sub, "TANG_RONG_CV"), 2),
+                "tong_hd_n": round(agg_unit_level_metric(sub, "TONG_HD_THANG_N"), 2),
+                "tang_rong_hd": round(agg_unit_level_metric(sub, "TANG_RONG_HD"), 2),
+                "tong_toi": round(sum(agg_unit_level_metric(sub, c) for c in TOI_SOURCE_COLS.values()), 2),
+            })
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("YEAR_MONTH").reset_index(drop=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BIỂU ĐỒ TRỰC QUAN (DONUT & 2 BARS CHUẨN THIẾT KẾ HDBANK)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def build_donut_chart(kpi_dat: int, kpi_khong_dat: int):
+    """Biểu đồ tròn khoét lỗ (Donut Chart) Tỷ lệ đạt KPIs toàn hàng."""
+    fig = go.Figure(
+        data=[
+            go.Pie(
+                labels=["Đạt KPIs", "Không đạt KPIs"],
+                values=[kpi_dat, kpi_khong_dat],
+                hole=0.58,
+                marker=dict(
+                    colors=["#34d399", "#fb923c"],
+                    line=dict(color="#ffffff", width=2.5),
+                ),
+                textinfo="percent",
+                textposition="inside",
+                insidetextorientation="horizontal",
+                sort=False,
+                textfont=dict(size=13, color="#ffffff", family="Segoe UI, Arial"),
+            )
+        ]
+    )
+
+    fig.update_layout(
+        title=dict(
+            text="<b>TỶ LỆ ĐẠT KPIs TOÀN HÀNG</b>",
+            x=0.5,
+            y=0.96,
+            xanchor="center",
+            yanchor="top",
+            font=dict(size=13, color="#111827", family="Segoe UI, Arial"),
+        ),
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="middle",
+            y=0.5,
+            xanchor="left",
+            x=1.02,
+            font=dict(size=11, color="#374151"),
+        ),
+        margin=dict(l=10, r=100, t=35, b=15),
+        height=290,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    return fig
+
+
+def build_trend_line_chart(trend_df: pd.DataFrame, title_suffix: str = "Toàn hàng"):
+    """Line Chart — Xu hướng % đạt KPIs & % thỏa LPT theo từng tháng thực tế (không lũy kế)."""
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=trend_df["THANG_STR"],
+            y=trend_df["pct_dat"],
+            mode="lines+markers",
+            name="% Đạt KPIs",
+            line=dict(color="#60a5fa", width=2.5),
+            marker=dict(size=7, color="#60a5fa"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=trend_df["THANG_STR"],
+            y=trend_df["pct_thoa"],
+            mode="lines+markers",
+            name="% Thỏa LPT",
+            line=dict(color="#34d399", width=2.5),
+            marker=dict(size=7, color="#34d399"),
+        )
+    )
+    fig.add_hline(y=80, line_width=1, line_dash="dot", line_color="#60a5fa", opacity=0.45)
+    fig.add_hline(y=70, line_width=1, line_dash="dot", line_color="#34d399", opacity=0.45)
+
+    fig.update_layout(
+        title=dict(
+            text=f"<b>XU HƯỚNG % ĐẠT KPIs & % THỎA LPT THEO THÁNG — {title_suffix}</b>",
+            x=0.5,
+            y=0.95,
+            xanchor="center",
+            yanchor="top",
+            font=dict(size=12.5, color="#111827", family="Segoe UI, Arial"),
+        ),
+        yaxis=dict(range=[0, 105], ticksuffix="%", gridcolor="#f0f2f5", tickfont=dict(size=10, color="#6b7280")),
+        xaxis=dict(tickfont=dict(size=10.5, color="#374151")),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=10.5)),
+        margin=dict(l=10, r=20, t=55, b=25),
+        height=280,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    return fig
+
+
+def build_multi_bar_trend_chart(
+    long_df: pd.DataFrame,
+    group_col: str,
+    value_col: str,
+    title: str,
+    y_suffix: str = "",
+    is_unit_level: bool = False,
+):
+    """
+    Bar Chart nhiều cột nhóm theo tháng (mỗi Khu vực / Đơn vị kinh doanh 1 cột màu pastel riêng
+    trong từng nhóm tháng) — dùng cho các chỉ tiêu số lượng (KHDN mới, KHTD/KHDN tăng ròng) khi bật
+    'Tất cả các tháng', thay cho Line Chart vì đây là số lượng rời rạc theo từng tháng, không phải xu hướng
+    liên tục — cột giúp so sánh trực quan hơn giữa các nhóm trong cùng 1 tháng, kể cả khi có giá trị âm.
+    """
+    fig = go.Figure()
+    group_labels = list(dict.fromkeys(long_df[group_col]))
+    for idx, grp in enumerate(group_labels):
+        sub = long_df[long_df[group_col] == grp].sort_values("YEAR_MONTH")
+        if sub.empty:
+            continue
+        color = get_unit_color(idx) if is_unit_level else get_kv_color(grp, idx)
+        fig.add_trace(
+            go.Bar(
+                x=sub["THANG_STR"],
+                y=sub[value_col],
+                name=grp,
+                marker=dict(color=color),
+            )
+        )
+
+    fig.update_layout(
+        barmode="group",
+        bargap=0.2,
+        bargroupgap=0.08,
+        title=dict(
+            text=f"<b>{title}</b>",
+            x=0.5,
+            y=0.96,
+            xanchor="center",
+            yanchor="top",
+            font=dict(size=12.5, color="#111827", family="Segoe UI, Arial"),
+        ),
+        yaxis=dict(
+            ticksuffix=y_suffix,
+            gridcolor="#f0f2f5",
+            tickfont=dict(size=10, color="#6b7280"),
+            zeroline=True,
+            zerolinecolor="#9ca3af",
+            zerolinewidth=1.5,
+        ),
+        xaxis=dict(tickfont=dict(size=10, color="#374151")),
+        legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, font=dict(size=9.5)),
+        margin=dict(l=10, r=20, t=45, b=70),
+        height=340,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    return fig
+
+
+def build_kv_kpi_bar(kv_charts: list[dict]):
+    """Biểu đồ thanh ngang SO SÁNH TỶ LỆ ĐẠT KPIs THEO 6 KHU VỰC (%) — mỗi Khu vực 1 màu pastel riêng."""
+    labels = [k["kv_label"] for k in kv_charts]
+    vals = [k["pct_dat"] for k in kv_charts]
+    bar_colors = [get_kv_color(lbl, i) for i, lbl in enumerate(labels)]
+
+    fig = go.Figure(
+        go.Bar(
+            x=vals,
+            y=labels,
+            orientation="h",
+            marker=dict(color=bar_colors),
+            text=[f"{v:.1f}%" for v in vals],
+            textposition="outside",
+            textfont=dict(size=11.5, color="#111827", family="Segoe UI, Arial"),
+            cliponaxis=False,
+        )
+    )
+
+    fig.update_layout(
+        title=dict(
+            text="<b>TỶ LỆ ĐẠT KPIs THEO 6 KHU VỰC (%)</b>",
+            x=0.5,
+            y=0.98,
+            xanchor="center",
+            yanchor="top",
+            font=dict(size=13, color="#111827", family="Segoe UI, Arial"),
+        ),
+        yaxis=dict(
+            autorange="reversed",
+            tickfont=dict(size=10.5, color="#374151"),
+        ),
+        xaxis=dict(
+            range=[0, 112],
+            tickvals=[0, 20, 40, 60, 80, 100],
+            ticktext=["0%", "20%", "40%", "60%", "80%", "100%"],
+            gridcolor="#f0f2f5",
+            tickfont=dict(size=10, color="#6b7280"),
+        ),
+        margin=dict(l=10, r=40, t=44, b=25),
+        height=290,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+
+    fig.add_vline(
+        x=80,
+        line_width=1.5,
+        line_dash="dash",
+        line_color=PASTEL_TARGET_LINE,
+        annotation_text="Target 80%",
+        annotation_position="top right",
+        annotation=dict(
+            yref="paper",
+            y=1.04,
+            yanchor="bottom",
+            font=dict(size=10, color=PASTEL_TARGET_LINE, family="Segoe UI, Arial"),
+        ),
+    )
+    return fig
+
+
+def build_kv_lpt_bar(kv_charts: list[dict]):
+    """Biểu đồ thanh ngang SO SÁNH TỶ LỆ THỎA LƯƠNG PHỤ TRỘI THEO 6 KHU VỰC (%) — mỗi Khu vực 1 màu pastel riêng."""
+    labels = [k["kv_label"] for k in kv_charts]
+    vals = [k["pct_thoa"] for k in kv_charts]
+    bar_colors = [get_kv_color(lbl, i) for i, lbl in enumerate(labels)]
+
+    fig = go.Figure(
+        go.Bar(
+            x=vals,
+            y=labels,
+            orientation="h",
+            marker=dict(color=bar_colors),
+            text=[f"{v:.1f}%" for v in vals],
+            textposition="outside",
+            textfont=dict(size=11.5, color="#111827", family="Segoe UI, Arial"),
+            cliponaxis=False,
+        )
+    )
+
+    fig.update_layout(
+        title=dict(
+            text="<b>TỶ LỆ THỎA LƯƠNG PHỤ TRỘI THEO 6 KHU VỰC (%)</b>",
+            x=0.5,
+            y=0.98,
+            xanchor="center",
+            yanchor="top",
+            font=dict(size=13, color="#111827", family="Segoe UI, Arial"),
+        ),
+        yaxis=dict(
+            autorange="reversed",
+            tickfont=dict(size=10.5, color="#374151"),
+        ),
+        xaxis=dict(
+            range=[0, 112],
+            tickvals=[0, 20, 40, 60, 80, 100],
+            ticktext=["0%", "20%", "40%", "60%", "80%", "100%"],
+            gridcolor="#f0f2f5",
+            tickfont=dict(size=10, color="#6b7280"),
+        ),
+        margin=dict(l=10, r=40, t=44, b=25),
+        height=290,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+
+    fig.add_vline(
+        x=70,
+        line_width=1.5,
+        line_dash="dash",
+        line_color=PASTEL_TARGET_LINE,
+        annotation_text="Target 70%",
+        annotation_position="top right",
+        annotation=dict(
+            yref="paper",
+            y=1.04,
+            yanchor="bottom",
+            font=dict(size=10, color=PASTEL_TARGET_LINE, family="Segoe UI, Arial"),
+        ),
+    )
+    return fig
+
+
+# Màu pastel 6 dải Hệ số LPT thực nhận (hồng nhạt -> xanh ngọc) + dải "Chưa xác định" (NULL/gạch nối)
+LPT_BIN_COLORS = {
+    "< 0%": "#f43f5e",
+    "0% ≤ … < 20%": "#ec4899",
+    "20% ≤ … < 50%": "#fb923c",
+    "50% ≤ … < 70%": "#fbbf24",
+    "70% ≤ … < 100%": "#a3e635",
+    "= 100%": "#10b981",
+    "Chưa xác định": "#cbd5e1",
+}
+
+
+def build_lpt_distribution_chart(kv_charts: list[dict]):
+    """BẢNG C — Stacked Bar 100% phân bổ dải Hệ số LPT thực nhận theo 6 Khu vực."""
+    labels = [k["kv_label"] for k in kv_charts]
+
+    fig = go.Figure()
+    for label, color in LPT_BIN_COLORS.items():
+        vals = [k["lpt_bin_pct"].get(label, 0.0) for k in kv_charts]
+        fig.add_trace(
+            go.Bar(
+                name=label,
+                x=vals,
+                y=labels,
+                orientation="h",
+                marker=dict(color=color, cornerradius=6, line=dict(color="#ffffff", width=2)),
+                text=[f"{v:.0f}%" if v >= 8 else "" for v in vals],
+                textposition="inside",
+                textfont=dict(size=9.5, color="#ffffff", family="Segoe UI, Arial", weight=700),
+                hovertemplate="%{y}: %{x:.1f}%<extra>" + label + "</extra>",
+            )
+        )
+
+    fig.update_layout(
+        barmode="stack",
+        bargap=0.35,
+        title=dict(
+            text="<b>🍩 PHÂN BỔ DẢI HỆ SỐ LPT THỰC NHẬN THEO 6 KHU VỰC (%)</b>",
+            x=0.5,
+            y=0.98,
+            xanchor="center",
+            yanchor="top",
+            font=dict(size=12.5, color="#111827", family="Segoe UI, Arial"),
+        ),
+        yaxis=dict(autorange="reversed", tickfont=dict(size=10.5, color="#374151"), ticksuffix="  "),
+        xaxis=dict(
+            range=[0, 100],
+            ticksuffix="%",
+            gridcolor="#f1f0fb",
+            tickfont=dict(size=10, color="#9ca3af"),
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.18,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=9, color="#374151"),
+        ),
+        margin=dict(l=10, r=20, t=40, b=75),
+        height=340,
+        plot_bgcolor="#fdfcff",
+        paper_bgcolor="#fdfcff",
+    )
+    return fig
+
+
+def build_lpt_distribution_pie(df: pd.DataFrame, thang_filter: str = ""):
+    """Pie Chart — Cơ cấu 6 dải Hệ số LPT thực nhận TOÀN HÀNG (bổ sung góc nhìn cho Stacked Bar theo KV)."""
+    df_thang, _, _ = apply_thang_filter(df, thang_filter)
+    tot = len(df_thang)
+    vals = df_thang["HE_SO_LPT_RAW"].dropna() if tot > 0 else pd.Series(dtype=float)
+
+    labels, counts, colors = [], [], []
+    for label, cond_fn in LPT_BINS:
+        labels.append(label)
+        counts.append(int(cond_fn(vals).sum()) if tot > 0 else 0)
+        colors.append(LPT_BIN_COLORS[label])
+    labels.append("Chưa xác định")
+    counts.append(tot - len(vals))
+    colors.append(LPT_BIN_COLORS["Chưa xác định"])
+
+    fig = go.Figure(
+        go.Pie(
+            labels=labels,
+            values=counts,
+            hole=0.55,
+            marker=dict(colors=colors, line=dict(color="#ffffff", width=2.5)),
+            textinfo="percent",
+            textposition="inside",
+            insidetextorientation="horizontal",
+            textfont=dict(size=11, color="#ffffff", family="Segoe UI, Arial", weight=700),
+            sort=False,
+        )
+    )
+    fig.update_layout(
+        title=dict(
+            text="<b>🍩 CƠ CẤU DẢI LPT THỰC NHẬN — TOÀN HÀNG</b>",
+            x=0.5,
+            y=0.96,
+            xanchor="center",
+            yanchor="top",
+            font=dict(size=12.5, color="#111827", family="Segoe UI, Arial"),
+        ),
+        legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02, font=dict(size=9.5, color="#374151")),
+        margin=dict(l=10, r=110, t=35, b=15),
+        height=320,
+        plot_bgcolor="#fdfcff",
+        paper_bgcolor="#fdfcff",
+    )
+    return fig
+
+
+def _build_kv_combo_chart(
+    kv_charts: list[dict],
+    sum_key: str,
+    avg_key: str,
+    title: str,
+    bar_color: str,
+    line_color: str,
+    per_kv_color: bool = False,
+    bar_label: str = "Tổng SL",
+    line_label: str = "Bình quân/ĐVKD",
+):
+    """
+    Combo Chart (Cột dọc + Đường) DÙNG CHUNG cho Bảng D/E/F VÀ Khối G/H mới: Cột = giá trị theo
+    `sum_key` (trục trái), Đường = giá trị theo `avg_key` (trục phải) — generic theo bất kỳ cặp
+    2 chỉ số nào trong kv_charts, không riêng gì "tổng/bình quân" (dùng `bar_label`/`line_label`
+    để đổi nhãn legend/trục cho đúng ngữ nghĩa khi tái sử dụng cho cặp chỉ số khác).
+    """
+    labels = [k["kv_label"] for k in kv_charts]
+    sums = [k[sum_key] for k in kv_charts]
+    avgs = [k[avg_key] for k in kv_charts]
+    bar_colors = [get_kv_color(lbl, i) for i, lbl in enumerate(labels)] if per_kv_color else bar_color
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=labels,
+            y=sums,
+            name=bar_label,
+            marker=dict(color=bar_colors),
+            text=[f"{v:,.0f}".replace(",", ".") for v in sums],
+            textposition="outside",
+            textfont=dict(size=10.5, color="#111827", family="Segoe UI, Arial"),
+            yaxis="y1",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=labels,
+            y=avgs,
+            name=line_label,
+            mode="lines+markers+text",
+            line=dict(color=line_color, width=2.5),
+            marker=dict(color=line_color, size=8),
+            text=[f"{v:,.1f}".replace(",", ".") for v in avgs],
+            textposition="top center",
+            textfont=dict(size=10, color=line_color, family="Segoe UI, Arial"),
+            yaxis="y2",
+        )
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=f"<b>{title}</b>",
+            x=0.5,
+            y=0.98,
+            xanchor="center",
+            yanchor="top",
+            font=dict(size=12.5, color="#111827", family="Segoe UI, Arial"),
+        ),
+        xaxis=dict(tickfont=dict(size=10, color="#374151"), tickangle=-12),
+        yaxis=dict(title=dict(text=bar_label, font=dict(size=10.5)), gridcolor="#f0f2f5", tickfont=dict(size=10, color="#6b7280")),
+        yaxis2=dict(
+            title=dict(text=line_label, font=dict(size=10.5)),
+            overlaying="y",
+            side="right",
+            showgrid=False,
+            tickfont=dict(size=10, color="#6b7280"),
+        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.005, xanchor="right", x=1, font=dict(size=10)),
+        margin=dict(l=10, r=10, t=55, b=45),
+        height=300,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        barmode="group",
+    )
+    return fig
+
+
+def build_khdn_moi_bar(kv_charts: list[dict]):
+    """BẢNG D — Combo Chart (Cột Tổng SL + Đường Bình quân/ĐVKD) KHDN mới theo 6 Khu vực — mỗi Khu vực 1 màu pastel."""
+    return _build_kv_combo_chart(
+        kv_charts,
+        "khdn_moi_sum",
+        "avg_khdn_moi",
+        "KHDN MỚI: TỔNG SL & BÌNH QUÂN/ĐVKD THEO 6 KHU VỰC",
+        "#8b7ff5",
+        "#4c1d95",
+        per_kv_color=True,
+    )
+
+
+def build_khtd_tang_bar(kv_charts: list[dict]):
+    """BẢNG E — Combo Chart (Cột Tổng SL + Đường Bình quân/ĐVKD) KHTD tăng ròng theo 6 Khu vực — mỗi Khu vực 1 màu pastel."""
+    return _build_kv_combo_chart(
+        kv_charts,
+        "khtd_tang_sum",
+        "avg_khtd_tang",
+        "KHTD TĂNG RÒNG: TỔNG SL & BÌNH QUÂN/ĐVKD THEO 6 KHU VỰC",
+        "#60a5fa",
+        "#1e293b",
+        per_kv_color=True,
+    )
+
+
+def build_khdn_tang_bar(kv_charts: list[dict]):
+    """BẢNG F — Combo Chart (Cột Tổng SL + Đường Bình quân/ĐVKD) KHDN tăng ròng theo 6 Khu vực — mỗi Khu vực 1 màu pastel."""
+    return _build_kv_combo_chart(
+        kv_charts,
+        "khdn_tang_sum",
+        "avg_khdn_tang",
+        "KHDN TĂNG RÒNG: TỔNG SL & BÌNH QUÂN/ĐVKD THEO 6 KHU VỰC",
+        "#60a5fa",
+        "#1e293b",
+        per_kv_color=True,
+    )
+
+
+def build_khoi_g_bar(kv_charts: list[dict]):
+    """KHỐI G — Combo Chart (Cột Tổng cho vay tháng N + Đường Tăng ròng cho vay) theo 6 Khu vực."""
+    return _build_kv_combo_chart(
+        kv_charts,
+        "tong_cv_n_sum",
+        "tang_rong_cv_sum",
+        "DƯ NỢ: TỔNG CHO VAY THÁNG N & TĂNG RÒNG CHO VAY THEO 6 KHU VỰC",
+        "#34d399",
+        "#065f46",
+        per_kv_color=True,
+        bar_label="Tổng cho vay tháng N",
+        line_label="Tăng ròng cho vay",
+    )
+
+
+def build_khoi_h_bar(kv_charts: list[dict]):
+    """KHỐI H — Combo Chart (Cột Tổng huy động tháng N + Đường Tăng ròng huy động) theo 6 Khu vực."""
+    return _build_kv_combo_chart(
+        kv_charts,
+        "tong_hd_n_sum",
+        "tang_rong_hd_sum",
+        "HUY ĐỘNG: TỔNG HUY ĐỘNG THÁNG N & TĂNG RÒNG HUY ĐỘNG THEO 6 KHU VỰC",
+        "#fbbf24",
+        "#92400e",
+        per_kv_color=True,
+        bar_label="Tổng huy động tháng N",
+        line_label="Tăng ròng huy động",
+    )
+
+
+def build_khoi_i_bar(kv_charts: list[dict]):
+    """KHỐI I — Bar đơn (không có cặp chỉ số thứ 2 tự nhiên như G/H) Tổng TOI theo 6 Khu vực."""
+    labels = [k["kv_label"] for k in kv_charts]
+    vals = [k["tong_toi_sum"] for k in kv_charts]
+    bar_colors = [get_kv_color(lbl, i) for i, lbl in enumerate(labels)]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=labels,
+            y=vals,
+            name="Tổng TOI",
+            marker=dict(color=bar_colors),
+            text=[f"{v:,.0f}".replace(",", ".") for v in vals],
+            textposition="outside",
+            textfont=dict(size=10.5, color="#111827", family="Segoe UI, Arial"),
+        )
+    )
+    fig.update_layout(
+        title=dict(
+            text="<b>TOI: TỔNG TOI THEO 6 KHU VỰC</b>",
+            x=0.5,
+            y=0.98,
+            xanchor="center",
+            yanchor="top",
+            font=dict(size=12.5, color="#111827", family="Segoe UI, Arial"),
+        ),
+        xaxis=dict(tickfont=dict(size=10, color="#374151"), tickangle=-12),
+        yaxis=dict(title=dict(text="Tổng TOI", font=dict(size=10.5)), gridcolor="#f0f2f5", tickfont=dict(size=10, color="#6b7280")),
+        showlegend=False,
+        margin=dict(l=10, r=10, t=55, b=45),
+        height=300,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    return fig
+
+
+# Ánh xạ lựa chọn Slicer KHỐI CHỈ TIÊU -> hàm dựng biểu đồ tương ứng (dùng cho biểu đồ tiêu điểm ở Tab 1)
+CHI_TIEU_CHART_MAP = {
+    "Tỷ lệ đạt KPIs": build_kv_kpi_bar,
+    "Tỷ lệ thỏa LPT": build_kv_lpt_bar,
+    "Phân bổ dải LPT thực nhận": build_lpt_distribution_chart,
+    "KHDN mới/ĐVKD": build_khdn_moi_bar,
+    "KHTD tăng ròng/ĐVKD": build_khtd_tang_bar,
+    "KHDN tăng ròng/ĐVKD": build_khdn_tang_bar,
+    "Chi tiết dư nợ": build_khoi_g_bar,
+    "Chi tiết huy động": build_khoi_h_bar,
+    "Chi tiết TOI": build_khoi_i_bar,
+}
+
+# Nhãn nút "Tất cả chỉ tiêu" trong Slicer KHỐI CHỈ TIÊU — khác với chuỗi rỗng "" (không chọn gì,
+# hiện 3 biểu đồ toàn hàng mặc định): khi chọn nhãn này sẽ hiện đủ 6 biểu đồ (Bảng A-F) cùng lúc.
+ALL_CT_LABEL = "Tất cả chỉ tiêu"
+
+# Nhãn nút "Tất cả các tháng" trong Slicer SỐ THÁNG — khác với chuỗi rỗng "" (không chọn gì,
+# vẫn tính snapshot gộp toàn bộ dữ liệu): khi chọn nhãn này, các biểu đồ theo KV/ĐVKD chuyển
+# sang chế độ nhiều đường (Line Chart) so sánh biến động qua TỪNG THÁNG thay vì 1 snapshot.
+ALL_MONTHS_LABEL = "Tất cả các tháng"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# XUẤT BÁO CÁO EXCEL TRỌN BỘ 6 SHEET
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def export_blocks_to_excel(blocks: dict[str, pd.DataFrame]) -> bytes:
+    """Xuất file Excel chuẩn hóa, mỗi sheet tương ứng 1 khối chỉ tiêu trong dict `blocks` truyền vào."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for sheet_name, block_df in blocks.items():
+            flat_df = block_df.copy()
+            if isinstance(flat_df.columns, pd.MultiIndex):
+                flat_df.columns = [f"{c[0]} | {c[1]}" for c in flat_df.columns]
+            flat_df.to_excel(writer, sheet_name=sheet_name[:31])
+            ws = writer.sheets[sheet_name[:31]]
+            for col_cells in ws.columns:
+                max_len = max(len(str(cell.value or "")) for cell in col_cells)
+                ws.column_dimensions[col_cells[0].column_letter].width = min(max(max_len + 4, 14), 40)
+    return output.getvalue()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DRILL-DOWN: CHI TIẾT ĐƠN VỊ KINH DOANH (MA_DV, TEN_DV) THEO KHU VỰC ĐANG CHỌN
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+# Ánh xạ lựa chọn Slicer KHỐI CHỈ TIÊU -> metadata (cột số liệu, tiêu đề, màu, có âm/dương hay không)
+# trong bảng/biểu đồ drill-down Đơn vị kinh doanh — dùng để sắp xếp, highlight cột và dựng biểu đồ
+# theo MA_DV khi kết hợp bộ lọc KHỐI CHỈ TIÊU với KHU VỰC.
+CHI_TIEU_UNIT_META = {
+    "Tỷ lệ đạt KPIs": {"column": "% đạt KPIs", "title": "TỶ LỆ ĐẠT KPIs", "color": "#60a5fa", "diverging": False},
+    "Tỷ lệ thỏa LPT": {"column": "% thỏa LPT", "title": "TỶ LỆ THỎA LƯƠNG PHỤ TRỘI", "color": "#34d399", "diverging": False},
+    "Phân bổ dải LPT thực nhận": {"column": "Hệ số LPT TB (%)", "title": "HỆ SỐ LPT THỰC NHẬN BÌNH QUÂN", "color": "#fb923c", "diverging": False},
+    "KHDN mới/ĐVKD": {"column": "SL KHDN mới", "title": "SL KHDN MỚI", "color": "#f472b6", "diverging": False},
+    "KHTD tăng ròng/ĐVKD": {"column": "SL KHTD tăng ròng", "title": "SL KHTD TĂNG RÒNG", "color": "#60a5fa", "diverging": True},
+    "KHDN tăng ròng/ĐVKD": {"column": "SL KHDN tăng ròng", "title": "SL KHDN TĂNG RÒNG", "color": "#60a5fa", "diverging": True},
+    "Chi tiết dư nợ": {"column": "Tổng CV", "title": "TỔNG CHO VAY (ĐVKD)", "color": "#34d399", "diverging": False},
+    "Chi tiết huy động": {"column": "Tổng HĐ", "title": "TỔNG HUY ĐỘNG (ĐVKD)", "color": "#fbbf24", "diverging": False},
+    "Chi tiết TOI": {"column": "Tổng TOI", "title": "TỔNG TOI (ĐVKD)", "color": "#a78bfa", "diverging": False},
+}
+DEFAULT_UNIT_META = {"column": "% đạt KPIs", "title": "TỶ LỆ ĐẠT KPIs", "color": "#60a5fa", "diverging": False}
+
+
+def get_unit_detail_table(
+    df: pd.DataFrame,
+    kv_filter: str,
+    thang_filter: str,
+    chi_tieu_filter: str = "",
+    ma_dv_filter: Optional[list] = None,
+    ns_filter: Optional[list] = None,
+) -> pd.DataFrame:
+    """
+    Group theo (TEN_KV, MA_DV, TEN_DV) trong phạm vi Khu vực & kỳ tháng đang chọn — luôn kèm cột
+    Khu vực để xem được ĐVKD thuộc khu vực nào kể cả khi không chọn riêng 1 Khu vực nào.
+    Nếu có chọn KHỐI CHỈ TIÊU, sắp xếp ưu tiên theo cột chỉ tiêu đó (giảm dần) để "kết hợp" 2 bộ lọc.
+    Nếu có `ma_dv_filter`/`ns_filter` (đa lựa chọn ĐVKD/Nhân sự), chỉ tính cho phạm vi đó.
+    Trả về DataFrame phẳng kèm 1 dòng "Tổng" cuối bảng.
+    """
+    df_thang, _, _ = apply_thang_filter(df, thang_filter)
+    df_kv = apply_nhan_su_filter(apply_ma_dv_filter(apply_kv_filter(df_thang, kv_filter), ma_dv_filter), ns_filter)
+
+    if df_kv.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for (ten_kv, ma_dv, ten_dv), sub in df_kv.groupby(["TEN_KV", "MA_DV", "TEN_DV"], sort=True):
+        tot = len(sub)
+        dat = len(sub[sub["KET_QUA_KPIS"] == "DAT_KPIS"])
+        thoa = len(sub[sub["KET_QUA_LPT"] == "THOA_LPT"])
+        lpt_vals = sub["HE_SO_LPT_RAW"].dropna()
+        lpt_tb = round(lpt_vals.mean() * 100, 1) if not lpt_vals.empty else None
+        rows.append({
+            "Khu vực": ten_kv,
+            "Mã ĐVKD": ma_dv,
+            "Tên ĐVKD": ten_dv,
+            "Tổng NS đánh giá": tot,
+            "SL đạt KPIs": dat,
+            "% đạt KPIs": round(dat / tot * 100, 1) if tot > 0 else 0.0,
+            "SL thỏa LPT": thoa,
+            "% thỏa LPT": round(thoa / tot * 100, 1) if tot > 0 else 0.0,
+            "Hệ số LPT TB (%)": lpt_tb,
+            "SL KHDN mới": int(sub["SL_KHDN_MOI_N"].sum()),
+            "SL KHDN tăng ròng": int(sub["SL_KHDN_TANG_RONG"].sum()),
+            "SL KHTD tăng ròng": int(sub["SL_KH_TD_TANG_RONG"].sum()),
+            # Khối G/H/I: giá trị cấp ĐVKD — dùng agg_unit_level_metric (dedup theo SYM_RUN_DATE)
+            "Tổng CV": round(agg_unit_level_metric(sub, "TONG_CV_THANG_N"), 2),
+            "Tổng HĐ": round(agg_unit_level_metric(sub, "TONG_HD_THANG_N"), 2),
+            "Tổng TOI": round(sum(agg_unit_level_metric(sub, c) for c in TOI_SOURCE_COLS.values()), 2),
+        })
+
+    res = pd.DataFrame(rows)
+
+    focus_col = CHI_TIEU_UNIT_META.get(chi_tieu_filter, {}).get("column")
+    if focus_col and focus_col in res.columns:
+        res = res.sort_values(focus_col, ascending=False, na_position="last").reset_index(drop=True)
+    else:
+        res = res.sort_values(["Khu vực", "Tên ĐVKD"]).reset_index(drop=True)
+
+    tot_ns = int(res["Tổng NS đánh giá"].sum())
+    tot_dat = int(res["SL đạt KPIs"].sum())
+    tot_thoa = int(res["SL thỏa LPT"].sum())
+    lpt_vals_all = df_kv["HE_SO_LPT_RAW"].dropna()
+    total_row = {
+        "Khu vực": "",
+        "Mã ĐVKD": "",
+        "Tên ĐVKD": "Tổng",
+        "Tổng NS đánh giá": tot_ns,
+        "SL đạt KPIs": tot_dat,
+        "% đạt KPIs": round(tot_dat / tot_ns * 100, 1) if tot_ns > 0 else 0.0,
+        "SL thỏa LPT": tot_thoa,
+        "% thỏa LPT": round(tot_thoa / tot_ns * 100, 1) if tot_ns > 0 else 0.0,
+        "Hệ số LPT TB (%)": round(lpt_vals_all.mean() * 100, 1) if not lpt_vals_all.empty else None,
+        "SL KHDN mới": int(res["SL KHDN mới"].sum()),
+        "SL KHDN tăng ròng": int(res["SL KHDN tăng ròng"].sum()),
+        "SL KHTD tăng ròng": int(res["SL KHTD tăng ròng"].sum()),
+        "Tổng CV": round(agg_unit_level_metric(df_kv, "TONG_CV_THANG_N"), 2),
+        "Tổng HĐ": round(agg_unit_level_metric(df_kv, "TONG_HD_THANG_N"), 2),
+        "Tổng TOI": round(sum(agg_unit_level_metric(df_kv, c) for c in TOI_SOURCE_COLS.values()), 2),
+    }
+    return pd.concat([res, pd.DataFrame([total_row])], ignore_index=True)
+
+
+def build_unit_metric_bar(unit_df: pd.DataFrame, meta: dict, kv_label: str):
+    """
+    Bar ngang theo từng Đơn vị kinh doanh (MA_DV) trong 1 Khu vực, cho 1 chỉ tiêu cụ thể —
+    Biểu đồ kết hợp cả 3 bộ lọc KHU VỰC + SỐ THÁNG/KỲ LŨY KẾ (đã áp vào unit_df) + KHỐI CHỈ TIÊU (meta).
+    """
+    df_plot = unit_df[unit_df["Tên ĐVKD"] != "Tổng"].copy()
+    value_col = meta["column"]
+    labels = [f"{r['Mã ĐVKD']} - {r['Tên ĐVKD']}" for _, r in df_plot.iterrows()]
+    vals = [float(v) if pd.notna(v) else 0.0 for v in df_plot[value_col]]
+    is_pct = "%" in value_col
+    if meta.get("diverging"):
+        bar_colors = [(PASTEL_POSITIVE if v >= 0 else PASTEL_NEGATIVE) for v in vals]
+    else:
+        bar_colors = [get_unit_color(i) for i in range(len(labels))]
+
+    fig = go.Figure(
+        go.Bar(
+            x=vals,
+            y=labels,
+            orientation="h",
+            marker=dict(color=bar_colors),
+            text=[f"{v:,.1f}{'%' if is_pct else ''}".replace(",", ".") for v in vals],
+            textposition="outside",
+            textfont=dict(size=11, color="#111827", family="Segoe UI, Arial"),
+            cliponaxis=False,
+        )
+    )
+    fig.update_layout(
+        title=dict(
+            text=f"<b>{meta['title']} THEO ĐVKD — {kv_label}</b>",
+            x=0.5,
+            y=0.98,
+            xanchor="center",
+            yanchor="top",
+            font=dict(size=12.5, color="#111827", family="Segoe UI, Arial"),
+        ),
+        yaxis=dict(autorange="reversed", tickfont=dict(size=10.5, color="#374151")),
+        xaxis=dict(
+            gridcolor="#f0f2f5",
+            tickfont=dict(size=10, color="#6b7280"),
+            zeroline=meta.get("diverging", False),
+            zerolinecolor="#9ca3af",
+            zerolinewidth=1.5,
+        ),
+        margin=dict(l=10, r=40, t=40, b=25),
+        height=max(220, 60 + 42 * max(len(labels), 1)),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    return fig
+
+
+def _ud_fmt_int(v):
+    try:
+        return f"{int(v):,}".replace(",", ".")
+    except (ValueError, TypeError):
+        return v
+
+
+def _ud_fmt_pct(v):
+    try:
+        return f"{float(v):.1f}%"
+    except (ValueError, TypeError):
+        return v
+
+
+def _ud_fmt_pct_or_blank(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    return _ud_fmt_pct(v)
+
+
+def style_unit_detail_table(unit_df: pd.DataFrame, chi_tieu_filter: str = ""):
+    """Định dạng số + highlight dòng Tổng, và highlight cột đang khớp với KHỐI CHỈ TIÊU đang chọn."""
+    df_fmt = unit_df.copy()
+    for col in ["Tổng NS đánh giá", "SL đạt KPIs", "SL thỏa LPT", "SL KHDN mới", "SL KHDN tăng ròng", "SL KHTD tăng ròng"]:
+        df_fmt[col] = df_fmt[col].apply(_ud_fmt_int)
+    for col in ["% đạt KPIs", "% thỏa LPT"]:
+        df_fmt[col] = df_fmt[col].apply(_ud_fmt_pct)
+    df_fmt["Hệ số LPT TB (%)"] = df_fmt["Hệ số LPT TB (%)"].apply(_ud_fmt_pct_or_blank)
+
+    focus_col = CHI_TIEU_UNIT_META.get(chi_tieu_filter, {}).get("column")
+
+    def highlight_total(row):
+        styles = []
+        for col in row.index:
+            style = ""
+            if row["Tên ĐVKD"] == "Tổng":
+                style = "background-color: #fff3cd; font-weight: 700; color: #856404;"
+            elif focus_col and col == focus_col:
+                style = "background-color: #e8f0fe; font-weight: 700; color: #0b3d91;"
+            styles.append(style)
+        return styles
+
+    return df_fmt.style.apply(highlight_total, axis=1)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DỮ LIỆU MÔ PHỎNG ĐẦY ĐỦ CHO DEMO
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def generate_demo_df() -> pd.DataFrame:
+    """Tạo bộ dữ liệu mô phỏng 7 kỳ (T01 -> T07/2026) cho 6 khu vực."""
+    random.seed(42)
+    months = [1, 2, 3, 4, 5, 6, 7]
+    toi_cols = [c for c in UNIT_LEVEL_NUMERIC_COLUMNS if c not in (
+        "TONG_CV_THANG_N", "TONG_CV_THANG_N_1", "TANG_RONG_CV",
+        "TONG_HD_THANG_N", "TONG_HD_THANG_N_1", "TANG_RONG_HD",
+    )]
+    rows = []
+    for m in months:
+        for kv_idx, kv in enumerate(STANDARD_KV_ORDER, start=1):
+            for dv in range(1, 4):
+                # Giá trị cấp ĐVKD — sinh 1 LẦN cho cả (ĐVKD, tháng), rồi lặp lại y hệt trên mọi
+                # dòng nhân sự bên dưới, mô phỏng đúng đặc điểm dữ liệu thật (xem cảnh báo dedup
+                # ở UNIT_LEVEL_NUMERIC_COLUMNS) để kiểm thử được agg_unit_level_metric().
+                tong_cv_n = round(random.uniform(1e9, 5e10), 2)
+                tong_cv_n1 = round(tong_cv_n * random.uniform(0.90, 1.05), 2)
+                tong_hd_n = round(random.uniform(1e9, 3e10), 2)
+                tong_hd_n1 = round(tong_hd_n * random.uniform(0.90, 1.05), 2)
+                toi_vals = {c: round(random.uniform(1e6, 5e8), 2) for c in toi_cols}
+
+                for ns in range(12):
+                    is_null = random.random() < 0.03
+                    if is_null:
+                        hs = None
+                    else:
+                        hs = round(random.choice([0.0, 0.15, 0.35, 0.60, 0.85, 1.0]), 2)
+
+                    rows.append({
+                        "SYM_RUN_DATE": pd.Timestamp(2026, m, 28 if m == 2 else 30),
+                        "THANG": m,
+                        "NAM": 2026,
+                        "MA_KV": kv_idx,
+                        "TEN_KV": kv,
+                        "MA_DV": f"DV_{kv_idx}_{dv}",
+                        "TEN_DV": f"Chi nhánh {kv_idx}.{dv}",
+                        "TEN_CV": f"Nhân sự {kv_idx}.{dv}.{ns + 1:02d}",
+                        "KET_QUA_KPIS": "DAT_KPIS" if random.random() > 0.42 else "KHONG_DAT_KPIS",
+                        "KET_QUA_LPT": "THOA_LPT" if random.random() > 0.30 else "KHONG_THOA_LPT",
+                        "SL_KHDN_MOI_N": random.randint(1, 14),
+                        "SL_KHDN_TANG_RONG": random.randint(-4, 9),
+                        "SL_KH_TD_TANG_RONG": random.randint(-6, 12),
+                        "Hệ số LPT thực nhận": hs,
+                        "HE_SO_LPT_RAW": hs,
+                        "HE_SO_LPT": hs if hs is not None else 0.0,
+                        "TONG_CV_THANG_N": tong_cv_n,
+                        "TONG_CV_THANG_N_1": tong_cv_n1,
+                        "TANG_RONG_CV": round(tong_cv_n - tong_cv_n1, 2),
+                        "TONG_HD_THANG_N": tong_hd_n,
+                        "TONG_HD_THANG_N_1": tong_hd_n1,
+                        "TANG_RONG_HD": round(tong_hd_n - tong_hd_n1, 2),
+                        **toi_vals,
+                    })
+
+    df = pd.DataFrame(rows)
+    df["YEAR_MONTH"] = df["SYM_RUN_DATE"].dt.to_period("M")
+    df["THANG_STR"] = df.apply(lambda r: f"T{r['THANG']:02d}/{r['NAM']}", axis=1)
+    return df
+
+
+def generate_demo_dvkd_items() -> list[dict]:
+    """Bộ dữ liệu mô phỏng cho 'Dashboard số liệu toàn hàng' — cùng shape với
+    load_and_preprocess_dvkd_excel(), dựng từ vài chỉ tiêu tiêu biểu (số liệu tham khảo
+    theo đúng dữ liệu mẫu thật đã cung cấp) để demo đủ cả 2 section chính."""
+    random.seed(7)
+    seed_items = [
+        ("A. Thông tin chung", "1", "Số lượng nhân sự", "NS", 1102),
+        ("A. Chỉ tiêu Chính", "1", "Huy động NHDN", "Tỷ đồng", 135497),
+        ("A. Chỉ tiêu Chính", "2", "Tổng cho vay", "Tỷ đồng", 419973),
+        ("A. Chỉ tiêu Chính", "9", "Tổng thu phí dịch vụ", "Tỷ đồng", 8342),
+        ("B. Chỉ tiêu Phụ", "12", "Số lượng khách hàng", "KH", 66615),
+        ("B. Chỉ tiêu Phụ", "14", "Số lượng khách hàng active", "KH", 31731),
+    ]
+    items = []
+    for row_idx, (section, prefix, ten, dvt, base) in enumerate(seed_items):
+        thuc_hien = {m: round(base * random.uniform(0.85, 1.10), 1) for m in range(1, 9)}
+        ke_hoach = {m: round(base * random.uniform(0.95, 1.05), 1) for m in range(1, 12)}
+        pct_ht = {m: round(thuc_hien.get(m, base) / ke_hoach[m], 4) for m in range(2, 12)}
+        items.append({
+            "row_idx": row_idx,
+            "section": section,
+            "label": f"{prefix}. {ten}",
+            "dvt": dvt,
+            "thuc_hien": thuc_hien,
+            "ke_hoach": ke_hoach,
+            "ke_hoach_nam": round(base * 12 * random.uniform(0.95, 1.05), 1),
+            "pct_ht": pct_ht,
+            "pct_ht_nam": round(random.uniform(0.8, 1.1), 4),
+        })
+    return items
+
+
+def get_persistent_data_dir() -> Path:
+    """
+    Thư mục lưu dữ liệu BỀN VỮNG qua các lần khởi động lại (vd accounts.json).
+    - Khi chạy thường (`python app.py` / `streamlit run app.py`): cạnh app.py.
+    - Khi đã đóng gói bằng PyInstaller (`sys.frozen == True`): PHẢI dùng thư mục chứa file .exe
+      thực tế (`sys.executable`), KHÔNG dùng `Path(__file__).parent` — vì app.py lúc đó được
+      giải nén vào 1 thư mục tạm khác nhau mỗi lần chạy (`sys._MEIPASS`), ghi file vào đó sẽ
+      mất dữ liệu ngay khi đóng ứng dụng.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
+
+
+def get_logo_base64() -> str:
+    logo_file = Path(__file__).parent / "hdbank_logo.png"
+    if logo_file.exists():
+        with open(logo_file, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+    return ""
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ĐĂNG NHẬP / ĐĂNG KÝ — TÀI KHOẢN QUẢN TRỊ (ADMIN) & KHÓA THIẾT BỊ THEO IP
+# ──────────────────────────────────────────────────────────────────────────────
+# Ghi chú kiến trúc (đã thống nhất với người dùng qua câu hỏi làm rõ):
+# - Chỉ tài khoản "admin" (mật khẩu cố định bên dưới) được phép tạo tài khoản mới; admin KHÔNG bị
+#   khóa thiết bị (đăng nhập được từ bất kỳ máy nào).
+# - Tài khoản thường do admin tạo: lần đăng nhập ĐẦU TIÊN sẽ "khóa" tài khoản đó vào đúng địa chỉ IP
+#   của máy đang đăng nhập (lấy IP mạng nội bộ của máy đang chạy app — vì mô hình triển khai là mỗi
+#   người tự chạy 1 bản .exe đóng gói riêng trên máy mình, không phải 1 server dùng chung nhiều người
+#   qua trình duyệt). Các lần đăng nhập sau chỉ thành công nếu trùng đúng IP đã khóa.
+# - Admin có thể gỡ khóa (xóa IP đã lưu) cho từng tài khoản trong tab "Quản lý tài khoản".
+# - Dữ liệu tài khoản lưu tại accounts.json — cạnh app.py khi chạy thường, cạnh file .exe khi đã
+#   đóng gói (xem get_persistent_data_dir()) — bền vững qua các lần khởi động lại app.
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "admin@1508"
+ACCOUNTS_FILE = get_persistent_data_dir() / "accounts.json"
+
+
+def _hash_password(password: str, salt: Optional[str] = None) -> str:
+    """Băm mật khẩu theo PBKDF2-HMAC-SHA256 kèm salt ngẫu nhiên — không lưu mật khẩu dạng chuỗi trần."""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 100_000)
+    return f"{salt}${digest.hex()}"
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        salt, _ = stored_hash.split("$", 1)
+    except ValueError:
+        return False
+    return _hash_password(password, salt) == stored_hash
+
+
+def get_local_ip() -> str:
+    """Lấy địa chỉ IP mạng nội bộ của máy đang chạy app (dùng để khóa thiết bị cho tài khoản thường)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return "unknown"
+
+
+def load_accounts() -> dict:
+    if not ACCOUNTS_FILE.exists():
+        return {}
+    try:
+        return json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_accounts(accounts: dict) -> None:
+    ACCOUNTS_FILE.write_text(json.dumps(accounts, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def create_account(username: str, password: str) -> tuple[bool, str]:
+    """Chỉ admin được gọi hàm này (kiểm tra vai trò ở nơi gọi). Trả về (thành công, thông báo)."""
+    username = username.strip()
+    if not username or not password:
+        return False, "Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu."
+    if username.lower() == ADMIN_USERNAME.lower():
+        return False, "Tên đăng nhập này đã được dùng cho tài khoản quản trị."
+    accounts = load_accounts()
+    if username in accounts:
+        return False, f"Tài khoản '{username}' đã tồn tại."
+    accounts[username] = {
+        "password_hash": _hash_password(password),
+        "locked_ip": None,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    save_accounts(accounts)
+    return True, f"Đã tạo tài khoản '{username}' thành công."
+
+
+def unlock_account_device(username: str) -> None:
+    """Admin gỡ khóa thiết bị cho 1 tài khoản — lần đăng nhập kế tiếp sẽ khóa lại theo IP mới."""
+    accounts = load_accounts()
+    if username in accounts:
+        accounts[username]["locked_ip"] = None
+        save_accounts(accounts)
+
+
+def authenticate(username: str, password: str) -> tuple[bool, str, str]:
+    """Trả về (thành công, vai trò 'admin'/'user', thông báo lỗi nếu thất bại)."""
+    username = username.strip()
+    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        return True, "admin", ""
+
+    accounts = load_accounts()
+    user = accounts.get(username)
+    if not user or not _verify_password(password, user.get("password_hash", "")):
+        return False, "", "Sai tên đăng nhập hoặc mật khẩu."
+
+    current_ip = get_local_ip()
+    locked_ip = user.get("locked_ip")
+    if locked_ip is None:
+        user["locked_ip"] = current_ip
+        accounts[username] = user
+        save_accounts(accounts)
+        return True, "user", ""
+    if locked_ip != current_ip:
+        return False, "", f"Tài khoản này đã đăng nhập trên thiết bị khác (IP: {locked_ip}). Liên hệ Admin để gỡ khóa thiết bị."
+    return True, "user", ""
+
+
+def render_login_page(logo_img_html: str) -> None:
+    """Màn hình đăng nhập — chặn toàn bộ nội dung Dashboard cho tới khi đăng nhập thành công."""
+    st.markdown(
+        f"""
+        <div style="text-align: center; padding: 40px 0 10px 0;">
+            <div style="margin-bottom: 12px;">{logo_img_html}</div>
+            <h1 style="font-size: 22px; font-weight: 800; color: #111827; margin: 0 0 6px 0; text-transform: uppercase;">
+                Đăng nhập hệ thống
+            </h1>
+            <p style="font-size: 13.5px; color: #4b5563; margin: 0 0 20px 0;">
+                Kết Quả Tổng Quan KPIs và Lương Phụ Trội QHKHDN
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    col_l, col_m, col_r = st.columns([1.2, 1.6, 1.2])
+    with col_m:
+        with st.container(border=True):
+            with st.form("login_form"):
+                username = st.text_input("Tên đăng nhập")
+                password = st.text_input("Mật khẩu", type="password")
+                submitted = st.form_submit_button("🔐 Đăng nhập", width="stretch", type="primary")
+            if submitted:
+                ok, role, err = authenticate(username, password)
+                if ok:
+                    st.session_state.auth_user = username
+                    st.session_state.auth_role = role
+                    st.rerun()
+                else:
+                    st.error(f"❌ {err}")
+            st.caption("Tài khoản mới chỉ do Admin cấp — liên hệ Admin nếu chưa có tài khoản hoặc cần gỡ khóa thiết bị.")
+    st.stop()
+
+
+def render_account_admin_panel() -> None:
+    """Khối quản lý tài khoản trong Sidebar — chỉ hiển thị khi đăng nhập bằng vai trò admin."""
+    st.markdown("### 🔐 Quản Lý Tài Khoản")
+    st.caption("Chỉ Admin thấy mục này. Tài khoản Admin không bị khóa thiết bị.")
+
+    with st.expander("➕ Tạo tài khoản mới"):
+        with st.form("create_account_form", clear_on_submit=True):
+            new_user = st.text_input("Tên đăng nhập mới")
+            new_pass = st.text_input("Mật khẩu", type="password", key="new_pass")
+            new_pass2 = st.text_input("Nhập lại mật khẩu", type="password", key="new_pass2")
+            submitted = st.form_submit_button("Tạo tài khoản", type="primary", width="stretch")
+        if submitted:
+            if new_pass != new_pass2:
+                st.error("❌ Mật khẩu nhập lại không khớp.")
+            else:
+                ok, msg = create_account(new_user, new_pass)
+                if ok:
+                    st.success(f"✅ {msg}")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
+
+    accounts = load_accounts()
+    with st.expander(f"📋 Danh sách tài khoản ({len(accounts)})"):
+        if not accounts:
+            st.caption("Chưa có tài khoản nào được tạo ngoài Admin.")
+        else:
+            for i, (uname, info) in enumerate(accounts.items()):
+                locked_ip = info.get("locked_ip")
+                st.markdown(f"**{uname}**")
+                st.caption(f"📍 {locked_ip or 'Chưa đăng nhập máy nào'}")
+                st.caption(f"🗓️ {info.get('created_at', '')}")
+                if locked_ip:
+                    if st.button("Gỡ khóa thiết bị", key=f"unlock_{uname}", width="stretch"):
+                        unlock_account_device(uname)
+                        st.rerun()
+                if i < len(accounts) - 1:
+                    st.markdown("---")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GIAO DIỆN CHÍNH STREAMLIT
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def main():
+    logo_b64 = get_logo_base64()
+    if logo_b64:
+        logo_img_html = f'<img src="data:image/png;base64,{logo_b64}" alt="HDBank Logo" style="height:85px; max-height:90px; object-fit:contain;" />'
+    else:
+        logo_img_html = '<span style="font-family:\'Arial Black\', Impact, sans-serif; font-size:32px; font-weight:900; color:#ed1c24;">HDBank</span>'
+
+    # ── CỔNG ĐĂNG NHẬP: CHẶN TOÀN BỘ NỘI DUNG CHO TỚI KHI ĐĂNG NHẬP THÀNH CÔNG ──
+    if "auth_user" not in st.session_state:
+        render_login_page(logo_img_html)
+
+    # ── THÔNG TIN TÀI KHOẢN & ĐĂNG XUẤT — LUÔN HIỂN THỊ (kể cả khi chưa tải dữ liệu) ──
+    with st.sidebar:
+        role_display = "Quản trị (Admin)" if st.session_state.auth_role == "admin" else "Người dùng"
+        st.markdown(f"👤 **{st.session_state.auth_user}** _( {role_display} )_")
+        if st.button("🚪 Đăng xuất", width="stretch", key="btn_logout"):
+            del st.session_state["auth_user"]
+            del st.session_state["auth_role"]
+            st.rerun()
+
+        confirm_close = st.checkbox("Xác nhận đóng ứng dụng", key="chk_confirm_close")
+        if st.button("🔴 Đóng ứng dụng", width="stretch", key="btn_close_app", disabled=not confirm_close):
+            st.info("Đang đóng ứng dụng, có thể tắt cửa sổ trình duyệt này...")
+            os._exit(0)
+
+        if st.session_state.auth_role == "admin":
+            render_account_admin_panel()
+        st.markdown("---")
+
+    has_data = (
+        (st.session_state.uploaded_df is not None)
+        or (st.session_state.uploaded_dvkd_items is not None)
+        or st.session_state.use_demo
+    )
+
+    # ── MÀN HÌNH TẢI FILE BAN ĐẦU ─────────────────────────────────────────────
+    if not has_data:
+        st.markdown(
+            f"""
+            <div style="text-align: center; padding: 25px 0 10px 0;">
+                <div style="margin-bottom: 12px;">{logo_img_html}</div>
+                <h1 style="font-size: 24px; font-weight: 800; color: #111827; margin: 0 0 6px 0; text-transform: uppercase; letter-spacing: 0.3px;">
+                    KẾT QUẢ TỔNG QUAN KPIs VÀ LƯƠNG PHỤ TRỘI QHKHDN
+                </h1>
+                <p style="font-size: 14px; color: #4b5563; margin: 0 0 20px 0;">
+                    Hệ thống tự động tính toán 6 khối chỉ tiêu theo sheet Đặc tả công thức và kỳ lũy kế N tháng gần nhất
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        col_l, col_m, col_r = st.columns([1, 2.6, 1])
+        with col_m:
+            with st.container(border=True):
+                st.markdown(
+                    """
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+                        <span style="font-size:22px;">📁</span>
+                        <span style="font-size:16px; font-weight:700; color:#1e3a8a;">TẢI LÊN FILE DỮ LIỆU EXCEL (.XLSX)</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                landing_file = st.file_uploader(
+                    "Chọn hoặc kéo thả file Excel vào đây để khởi tạo Dashboard:",
+                    type=["xlsx"],
+                    key="landing_file_uploader",
+                    help="File Excel cần chứa sheet 'Data import KPIs' và/hoặc 'Data import số ĐVKD'.",
+                )
+
+                if landing_file is not None:
+                    try:
+                        file_bytes = landing_file.read()
+                        xls_probe = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
+                        has_kpi_sheet = find_data_sheet(xls_probe) is not None
+                        has_dvkd_sheet = find_data_sheet_dvkd(xls_probe) is not None
+
+                        if not has_kpi_sheet and not has_dvkd_sheet:
+                            st.error("❌ Không tìm thấy sheet 'Data import KPIs' hoặc 'Data import số ĐVKD' trong file này.")
+                        else:
+                            with st.spinner("Đang xử lý dữ liệu và tính toán chỉ tiêu..."):
+                                msgs = []
+                                if has_kpi_sheet:
+                                    df = load_and_preprocess_excel(file_bytes)
+                                    st.session_state.uploaded_df = df
+                                    st.session_state.uploaded_file_name = landing_file.name
+                                    msgs.append(f"{len(df):,} dòng KPIs")
+                                if has_dvkd_sheet:
+                                    items = load_and_preprocess_dvkd_excel(file_bytes)
+                                    st.session_state.uploaded_dvkd_items = items
+                                    st.session_state.uploaded_file_name_dvkd = landing_file.name
+                                    msgs.append(f"{len(items):,} chỉ tiêu số liệu toàn hàng")
+                                st.session_state.use_demo = False
+                                st.success("✅ Đã tải thành công: " + ", ".join(msgs))
+                                st.rerun()
+                    except Exception as ex:
+                        st.error(f"❌ Lỗi xử lý file Excel: {ex}")
+
+                with st.expander("📎 Tải riêng dữ liệu 'Data import số ĐVKD' (nếu nằm ở 1 file Excel khác)"):
+                    landing_file_dvkd = st.file_uploader(
+                        "Chọn file Excel chứa sheet 'Data import số ĐVKD':",
+                        type=["xlsx"],
+                        key="landing_file_uploader_dvkd",
+                    )
+                    if landing_file_dvkd is not None:
+                        try:
+                            with st.spinner("Đang xử lý dữ liệu số liệu toàn hàng..."):
+                                items = load_and_preprocess_dvkd_excel(landing_file_dvkd.read())
+                                st.session_state.uploaded_dvkd_items = items
+                                st.session_state.uploaded_file_name_dvkd = landing_file_dvkd.name
+                                st.session_state.use_demo = False
+                                st.success(f"✅ Đã tải thành công {len(items):,} chỉ tiêu số liệu toàn hàng!")
+                                st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ Lỗi xử lý file Excel: {ex}")
+
+                st.markdown(
+                    """
+                    <div style="background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 6px; padding: 10px 14px; margin-top: 14px; font-size: 12.5px; color: #475569; line-height: 1.6;">
+                        <strong>📌 Đặc tả công thức tính toán:</strong><br>
+                        • <strong>Kỳ lũy kế N tháng gần nhất:</strong> Hỗ trợ N = 1..12 tính lùi từ tháng mới nhất M_max trong data (tự động điều chỉnh theo dữ liệu thực tế).<br>
+                        • <strong>6 Khối chỉ tiêu:</strong> Bảng A (Đạt KPIs), Bảng B (Thỏa LPT), Bảng C (6 Dải LPT), Bảng D (KHDN mới), Bảng E (KHTD tăng ròng), Bảng F (KHDN tăng ròng).<br>
+                        • <strong>Phân bổ LPT (Bảng C):</strong> Chuẩn hóa nửa khoảng đóng-trái, hệ số NULL không tính vào dải nào.
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+                if st.button("👉 Hoặc bấm vào đây để xem trước với Dữ liệu mẫu (Chuẩn 6 khối chỉ tiêu)", width="stretch", type="secondary"):
+                    st.session_state.use_demo = True
+                    st.rerun()
+
+        st.stop()
+
+    # ── MÀN HÌNH DASHBOARD ĐẦY ĐỦ KHI ĐÃ CÓ DỮ LIỆU ────────────────────────────
+
+    has_kpi_data = (st.session_state.uploaded_df is not None) or st.session_state.use_demo
+
+    top_tab_kpis, top_tab_dvkd = st.tabs(["📊 Dashboard KPIs và LPT", "🏦 Dashboard số liệu toàn hàng"])
+
+    with top_tab_kpis:
+        if not has_kpi_data:
+            st.info("📂 Chưa có dữ liệu 'Data import KPIs'. Vui lòng tải lên tại đây để xem Dashboard KPIs và LPT:")
+            inline_kpi_file = st.file_uploader(
+                "Chọn file Excel chứa sheet 'Data import KPIs':",
+                type=["xlsx"],
+                key="inline_kpi_uploader",
+            )
+            if inline_kpi_file is not None:
+                try:
+                    with st.spinner("Đang xử lý dữ liệu và tính toán chỉ tiêu..."):
+                        df = load_and_preprocess_excel(inline_kpi_file.read())
+                        st.session_state.uploaded_df = df
+                        st.session_state.uploaded_file_name = inline_kpi_file.name
+                        st.success(f"✅ Đã tải thành công {len(df):,} dòng dữ liệu!")
+                        st.rerun()
+                except Exception as ex:
+                    st.error(f"❌ Lỗi xử lý file Excel: {ex}")
+        else:
+            # Chuẩn bị DataFrame tính toán
+            if st.session_state.uploaded_df is not None:
+                calc_df = st.session_state.uploaded_df
+            else:
+                calc_df = generate_demo_df()
+
+            # Sidebar quản lý file
+            with st.sidebar:
+                if logo_b64:
+                    st.markdown(
+                        f'<div style="text-align:center; margin-bottom:12px;"><img src="data:image/png;base64,{logo_b64}" style="width:170px; object-fit:contain;" /></div>',
+                        unsafe_allow_html=True,
+                    )
+                st.markdown("### ⚙️ Quản lý Dữ liệu")
+
+                if st.session_state.uploaded_df is not None:
+                    st.success(f"📄 File: **{st.session_state.uploaded_file_name}**")
+                    st.write(f"Tổng số dòng: **{len(calc_df):,}**")
+                else:
+                    st.info("🌟 Đang xem: **Dữ liệu mẫu HDBank** (7 kỳ T01-T07/2026)")
+
+                re_upload = st.file_uploader(
+                    "📁 Đổi file Excel khác:",
+                    type=["xlsx"],
+                    key="sidebar_reupload",
+                    help="Tải file Excel khác để cập nhật Dashboard.",
+                )
+                if re_upload is not None:
+                    try:
+                        df = load_and_preprocess_excel(re_upload.read())
+                        st.session_state.uploaded_df = df
+                        st.session_state.uploaded_file_name = re_upload.name
+                        st.session_state.use_demo = False
+                        st.success("✅ Đã cập nhật file mới!")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"❌ Lỗi: {ex}")
+
+                if st.button("🔄 Nhập file mới từ đầu", width="stretch"):
+                    st.session_state.uploaded_df = None
+                    st.session_state.uploaded_file_name = ""
+                    st.session_state.use_demo = False
+                    st.session_state.filter_kv = ""
+                    st.session_state.filter_thang = ""
+                    st.session_state.filter_chi_tieu = ""
+                    st.session_state.filter_ma_dv = []
+                    st.session_state.filter_nhan_su = []
+                    st.rerun()
+
+                st.markdown("---")
+                st.caption("Khối QHKHDN - HDBank Dashboard v2.0")
+
+            # Tính toán các chỉ số Overview Metrics từ dữ liệu thật
+            metrics = compute_overview_metrics(
+                calc_df,
+                st.session_state.filter_kv,
+                st.session_state.filter_thang,
+                st.session_state.filter_chi_tieu,
+                st.session_state.filter_ma_dv,
+                st.session_state.filter_nhan_su,
+            )
+
+            # ── HEADER SECTION ────────────────────────────────────────────────────────
+            header_html = f"""
+            <div class="hdbank-header">
+                <div class="hdbank-brand">
+                    {logo_img_html}
+                </div>
+                <div class="hdbank-title-center">
+                    <h1 class="hdbank-main-title">KẾT QUẢ TỔNG QUAN KPIs VÀ LƯƠNG PHỤ TRỘI QHKHDN</h1>
+                    <div class="hdbank-sub-title">Hệ thống tổng hợp hiệu quả KPIs, chi trả lương phụ trội và phát triển khách hàng</div>
+                </div>
+                <div class="hdbank-date-right">
+                    <div><em>Dữ liệu tại ngày: <strong>{metrics['run_date']}</strong></em></div>
+                    <div><em>So sánh với kỳ trước: <strong>{metrics['prev_date']}</strong></em></div>
+                </div>
+            </div>
+            """
+            st.markdown(header_html, unsafe_allow_html=True)
+
+            # ── THANH TRẠNG THÁI FILE & NÚT ĐỔI FILE ──────────────────────────────────
+            bar_col1, bar_col2 = st.columns([4, 1.2])
+            with bar_col1:
+                if st.session_state.uploaded_df is not None:
+                    st.info(f"📂 **Nguồn dữ liệu:** File `{st.session_state.uploaded_file_name}` ({len(calc_df):,} nhân sự) • Dữ liệu chốt ngày: **{metrics['run_date']}**")
+                else:
+                    st.info(f"🌟 **Nguồn dữ liệu:** Dữ liệu mẫu chuẩn HDBank ({len(calc_df):,} nhân sự) • Dữ liệu chốt ngày: **{metrics['run_date']}**")
+            with bar_col2:
+                if st.button("🔄 Nhập file Excel khác", width="stretch", key="btn_top_change_file"):
+                    st.session_state.uploaded_df = None
+                    st.session_state.uploaded_file_name = ""
+                    st.session_state.use_demo = False
+                    st.session_state.filter_kv = ""
+                    st.session_state.filter_thang = ""
+                    st.session_state.filter_chi_tieu = ""
+                    st.session_state.filter_ma_dv = []
+                    st.session_state.filter_nhan_su = []
+                    st.rerun()
+
+            # ── TÍNH TOÁN TRƯỚC 9 BẢNG CHỈ TIÊU CHO TOÀN BỘ DATA (theo từng tháng thực tế) ──
+            periods = get_monthly_periods(calc_df)
+            b1 = calc_block1(calc_df, periods)
+            b2 = calc_block2(calc_df, periods)
+            b3 = calc_block3(calc_df, periods)
+            b4 = calc_block4(calc_df, periods)
+            b5 = calc_block5(calc_df, periods)
+            b6 = calc_block6(calc_df, periods)
+            b7 = calc_block7(calc_df, periods)
+            b8 = calc_block8(calc_df, periods)
+            b9 = calc_block9(calc_df, periods)
+
+            # ── NAVIGATION TABS ──────────────────────────────────────────────────────
+            tab_overview, tab_tables, tab_export = st.tabs(
+                [
+                    "📊 Dashboard Tổng Quan",
+                    "📋 Báo Cáo 6 Khối Chỉ Tiêu (Đặc tả công thức)",
+                    "📥 Xuất Báo Cáo Excel",
+                ]
+            )
+
+            with tab_overview:
+                # ── 3 HỘP BỘ LỌC SLICER PHONG CÁCH POWER BI ─────────────────────────
+                col_kv, col_thang, col_ct = st.columns([1.1, 2.4, 1.7])
+
+                # Hộp 1: KHU VỰC (KV1 -> KV6)
+                with col_kv:
+                    with st.container(border=True):
+                        st.markdown(
+                            """
+                            <div class="slicer-card-header slicer-card-header-kv">
+                                <span>KHU VỰC</span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        is_all_kv = st.session_state.filter_kv in ("", "(blank)")
+                        if st.button("🏢 Toàn Hàng", type="primary" if is_all_kv else "secondary", key="btn_all_kv", width="stretch"):
+                            st.session_state.filter_kv = ""
+                            st.session_state.filter_ma_dv = []
+                            st.session_state.filter_nhan_su = []
+                            st.rerun()
+
+                        r1_c1, r1_c2 = st.columns(2)
+                        with r1_c1:
+                            is_kv1 = st.session_state.filter_kv == "KV 1"
+                            if st.button("KV 1", type="primary" if is_kv1 else "secondary", key="btn_kv1"):
+                                st.session_state.filter_kv = "" if is_kv1 else "KV 1"
+                                st.session_state.filter_ma_dv = []
+                                st.session_state.filter_nhan_su = []
+                                st.rerun()
+                            is_kv3 = st.session_state.filter_kv == "KV 3"
+                            if st.button("KV 3", type="primary" if is_kv3 else "secondary", key="btn_kv3"):
+                                st.session_state.filter_kv = "" if is_kv3 else "KV 3"
+                                st.session_state.filter_ma_dv = []
+                                st.session_state.filter_nhan_su = []
+                                st.rerun()
+                            is_kv5 = st.session_state.filter_kv == "KV 5"
+                            if st.button("KV 5", type="primary" if is_kv5 else "secondary", key="btn_kv5"):
+                                st.session_state.filter_kv = "" if is_kv5 else "KV 5"
+                                st.session_state.filter_ma_dv = []
+                                st.session_state.filter_nhan_su = []
+                                st.rerun()
+                        with r1_c2:
+                            is_kv2 = st.session_state.filter_kv == "KV 2"
+                            if st.button("KV 2", type="primary" if is_kv2 else "secondary", key="btn_kv2"):
+                                st.session_state.filter_kv = "" if is_kv2 else "KV 2"
+                                st.session_state.filter_ma_dv = []
+                                st.session_state.filter_nhan_su = []
+                                st.rerun()
+                            is_kv4 = st.session_state.filter_kv == "KV 4"
+                            if st.button("KV 4", type="primary" if is_kv4 else "secondary", key="btn_kv4"):
+                                st.session_state.filter_kv = "" if is_kv4 else "KV 4"
+                                st.session_state.filter_ma_dv = []
+                                st.session_state.filter_nhan_su = []
+                                st.rerun()
+                            is_kv6 = st.session_state.filter_kv == "KV 6"
+                            if st.button("KV 6", type="primary" if is_kv6 else "secondary", key="btn_kv6"):
+                                st.session_state.filter_kv = "" if is_kv6 else "KV 6"
+                                st.session_state.filter_ma_dv = []
+                                st.session_state.filter_nhan_su = []
+                                st.rerun()
+
+                        # Khi đã chọn 1 Khu vực cụ thể: xổ ra các nút ĐVKD (MA_DV) trong Khu vực đó để đa lựa chọn
+                        if not is_all_kv:
+                            kv_units = get_kv_units(calc_df, st.session_state.filter_kv)
+                            valid_ma_dv = {u[0] for u in kv_units}
+                            st.session_state.filter_ma_dv = [m for m in st.session_state.filter_ma_dv if m in valid_ma_dv]
+
+                            if kv_units:
+                                st.markdown(
+                                    """
+                                    <div class="slicer-divider"></div>
+                                    <div class="slicer-sub-label">
+                                        <span class="sub-label-indicator indicator-navy"></span>
+                                        ĐƠN VỊ KINH DOANH (chọn 1 hoặc nhiều)
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True,
+                                )
+                                for i in range(0, len(kv_units), 2):
+                                    row_units = kv_units[i : i + 2]
+                                    row_cols = st.columns(2)
+                                    for j, (ma_dv, ten_dv) in enumerate(row_units):
+                                        with row_cols[j]:
+                                            is_sel = ma_dv in st.session_state.filter_ma_dv
+                                            if st.button(
+                                                ten_dv,
+                                                type="primary" if is_sel else "secondary",
+                                                key=f"btn_dv_{ma_dv}",
+                                                width="stretch",
+                                            ):
+                                                if is_sel:
+                                                    st.session_state.filter_ma_dv.remove(ma_dv)
+                                                else:
+                                                    st.session_state.filter_ma_dv.append(ma_dv)
+                                                    st.session_state.filter_nhan_su = []
+                                                st.rerun()
+
+                            # Tầng lọc thứ 3 — khi đã chọn ít nhất 1 ĐVKD cụ thể: xổ ra nút chọn theo
+                            # Họ tên nhân sự (TEN_CV) trong (các) ĐVKD đang chọn, cùng phong cách đa
+                            # lựa chọn với nút ĐVKD phía trên.
+                            if st.session_state.filter_ma_dv:
+                                dv_staff = get_dv_staff(calc_df, st.session_state.filter_kv, st.session_state.filter_ma_dv)
+                                valid_staff = set(dv_staff)
+                                st.session_state.filter_nhan_su = [
+                                    n for n in st.session_state.filter_nhan_su if n in valid_staff
+                                ]
+
+                                if dv_staff:
+                                    st.markdown(
+                                        """
+                                        <div class="slicer-divider"></div>
+                                        <div class="slicer-sub-label">
+                                            <span class="sub-label-indicator indicator-navy"></span>
+                                            NHÂN SỰ (chọn 1 hoặc nhiều)
+                                        </div>
+                                        """,
+                                        unsafe_allow_html=True,
+                                    )
+                                    for i in range(0, len(dv_staff), 2):
+                                        row_staff = dv_staff[i : i + 2]
+                                        row_cols_ns = st.columns(2)
+                                        for j, ten_cv in enumerate(row_staff):
+                                            with row_cols_ns[j]:
+                                                is_sel_ns = ten_cv in st.session_state.filter_nhan_su
+                                                if st.button(
+                                                    ten_cv,
+                                                    type="primary" if is_sel_ns else "secondary",
+                                                    key=f"btn_ns_{i + j}",
+                                                    width="stretch",
+                                                ):
+                                                    if is_sel_ns:
+                                                        st.session_state.filter_nhan_su.remove(ten_cv)
+                                                    else:
+                                                        st.session_state.filter_nhan_su.append(ten_cv)
+                                                    st.rerun()
+                            elif st.session_state.filter_nhan_su:
+                                # Không còn ĐVKD nào được chọn -> tầng Nhân sự không còn hợp lệ, reset theo.
+                                st.session_state.filter_nhan_su = []
+
+                # Hộp 2: SỐ THÁNG (Từng tháng cụ thể)
+                with col_thang:
+                    with st.container(border=True):
+                        unique_yms = sorted(calc_df["YEAR_MONTH"].dropna().unique())
+                        total_months = len(unique_yms)
+                        max_n = min(12, total_months)
+                        avail_months = sorted([m for m in calc_df["THANG_STR"].dropna().unique() if m != "(blank)" and m != ""])
+
+                        # Kiểm tra tính hợp lệ của bộ lọc đang chọn
+                        if (
+                            st.session_state.filter_thang
+                            and st.session_state.filter_thang not in avail_months
+                            and st.session_state.filter_thang != ALL_MONTHS_LABEL
+                        ):
+                            st.session_state.filter_thang = ""
+
+                        st.markdown(
+                            """
+                            <div class="slicer-card-header slicer-card-header-thang">
+                                <span>SỐ THÁNG</span>
+                                <span style="color:#94a3b8; cursor:pointer;" title="Bấm nút để lọc; bấm lại để xem tất cả">ℹ️</span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        is_all_months = st.session_state.filter_thang == ALL_MONTHS_LABEL
+                        if st.button(
+                            "📅 Tất cả các tháng (So sánh)",
+                            type="primary" if is_all_months else "secondary",
+                            key="btn_all_months",
+                            width="stretch",
+                        ):
+                            st.session_state.filter_thang = "" if is_all_months else ALL_MONTHS_LABEL
+                            st.rerun()
+
+                        # Hàng 1 Tháng cụ thể: tối đa 6 tháng đầu
+                        r1_m = avail_months[:6]
+                        cols_m1 = st.columns(6)
+                        for i, m in enumerate(r1_m):
+                            with cols_m1[i]:
+                                is_sel = st.session_state.filter_thang == m
+                                if st.button(m, type="primary" if is_sel else "secondary", key=f"btn_m_{i+1}"):
+                                    st.session_state.filter_thang = "" if is_sel else m
+                                    st.rerun()
+
+                        # Hàng 2 Tháng cụ thể (nếu có trên 6 tháng): tháng 7 trở đi
+                        if len(avail_months) > 6:
+                            r2_m = avail_months[6:12]
+                            cols_m2 = st.columns(6)
+                            for i, m in enumerate(r2_m):
+                                with cols_m2[i]:
+                                    is_sel = st.session_state.filter_thang == m
+                                    if st.button(m, type="primary" if is_sel else "secondary", key=f"btn_m_{i+7}"):
+                                        st.session_state.filter_thang = "" if is_sel else m
+                                        st.rerun()
+
+                # Hộp 3: KHỐI CHỈ TIÊU (9 lựa chọn: Bảng A-F + Khối G/H/I)
+                with col_ct:
+                    with st.container(border=True):
+                        st.markdown(
+                            """
+                            <div class="slicer-card-header slicer-card-header-ct">
+                                <span>KHỐI CHỈ TIÊU (BẢNG A - I)</span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        is_all_ct = st.session_state.filter_chi_tieu == ALL_CT_LABEL
+                        if st.button("📊 Tất cả chỉ tiêu (A - I)", type="primary" if is_all_ct else "secondary", key="btn_all_ct", width="stretch"):
+                            st.session_state.filter_chi_tieu = "" if is_all_ct else ALL_CT_LABEL
+                            st.rerun()
+
+                        ct_c1, ct_c2, ct_c3 = st.columns(3)
+                        with ct_c1:
+                            is_kpi = st.session_state.filter_chi_tieu == "Tỷ lệ đạt KPIs"
+                            if st.button("Tỷ lệ đạt KPIs", type="primary" if is_kpi else "secondary", key="btn_ct_kpi"):
+                                st.session_state.filter_chi_tieu = "" if is_kpi else "Tỷ lệ đạt KPIs"
+                                st.rerun()
+
+                            is_pb = st.session_state.filter_chi_tieu == "Phân bổ dải LPT thực nhận"
+                            if st.button("Phân bổ dải LPT thực nhận", type="primary" if is_pb else "secondary", key="btn_ct_pb"):
+                                st.session_state.filter_chi_tieu = "" if is_pb else "Phân bổ dải LPT thực nhận"
+                                st.rerun()
+
+                            is_khtd = st.session_state.filter_chi_tieu == "KHTD tăng ròng/ĐVKD"
+                            if st.button("KHTD tăng ròng/ĐVKD", type="primary" if is_khtd else "secondary", key="btn_ct_khtd"):
+                                st.session_state.filter_chi_tieu = "" if is_khtd else "KHTD tăng ròng/ĐVKD"
+                                st.rerun()
+
+                        with ct_c2:
+                            is_lpt = st.session_state.filter_chi_tieu == "Tỷ lệ thỏa LPT"
+                            if st.button("Tỷ lệ thỏa LPT", type="primary" if is_lpt else "secondary", key="btn_ct_lpt"):
+                                st.session_state.filter_chi_tieu = "" if is_lpt else "Tỷ lệ thỏa LPT"
+                                st.rerun()
+
+                            is_khdn_moi = st.session_state.filter_chi_tieu == "KHDN mới/ĐVKD"
+                            if st.button("KHDN mới/ĐVKD", type="primary" if is_khdn_moi else "secondary", key="btn_ct_khdn_moi"):
+                                st.session_state.filter_chi_tieu = "" if is_khdn_moi else "KHDN mới/ĐVKD"
+                                st.rerun()
+
+                            is_khdn_tang = st.session_state.filter_chi_tieu == "KHDN tăng ròng/ĐVKD"
+                            if st.button("KHDN tăng ròng/ĐVKD", type="primary" if is_khdn_tang else "secondary", key="btn_ct_khdn_tang"):
+                                st.session_state.filter_chi_tieu = "" if is_khdn_tang else "KHDN tăng ròng/ĐVKD"
+                                st.rerun()
+
+                        with ct_c3:
+                            is_khoi_g = st.session_state.filter_chi_tieu == "Chi tiết dư nợ"
+                            if st.button("Chi tiết dư nợ", type="primary" if is_khoi_g else "secondary", key="btn_ct_khoi_g"):
+                                st.session_state.filter_chi_tieu = "" if is_khoi_g else "Chi tiết dư nợ"
+                                st.rerun()
+
+                            is_khoi_h = st.session_state.filter_chi_tieu == "Chi tiết huy động"
+                            if st.button("Chi tiết huy động", type="primary" if is_khoi_h else "secondary", key="btn_ct_khoi_h"):
+                                st.session_state.filter_chi_tieu = "" if is_khoi_h else "Chi tiết huy động"
+                                st.rerun()
+
+                            is_khoi_i = st.session_state.filter_chi_tieu == "Chi tiết TOI"
+                            if st.button("Chi tiết TOI", type="primary" if is_khoi_i else "secondary", key="btn_ct_khoi_i"):
+                                st.session_state.filter_chi_tieu = "" if is_khoi_i else "Chi tiết TOI"
+                                st.rerun()
+
+                st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+
+                # ── 6 THẺ KPI HÌNH VIÊN THUỐC (ROUNDED PILL CARDS) ──────────────────
+                k1, k2, k3, k4, k5, k6 = st.columns(6)
+
+                def _get_delta_cls(d_str: str) -> str:
+                    if "▲" in d_str:
+                        return "delta-up"
+                    if "▼" in d_str:
+                        return "delta-down"
+                    return "delta-neutral"
+
+                # Thẻ 1: Tổng số ĐVKD (xanh dương pastel) — đẩy lên đầu hàng theo yêu cầu
+                with k1:
+                    st.markdown(
+                        f"""
+                        <div class="kpi-pill kpi-bg-blue">
+                            <span class="kpi-icon-badge kpi-icon-blue">👥</span>
+                            <div class="kpi-title">Tổng số ĐVKD</div>
+                            <div class="kpi-value-container">
+                                <span class="kpi-big-num color-blue">{metrics['total_dvkd']:,}</span>
+                            </div>
+                            <div class="kpi-delta {_get_delta_cls(metrics['delta_dvkd'])}">{metrics['delta_dvkd']}</div>
+                        </div>
+                        """.replace(",", "."),
+                        unsafe_allow_html=True,
+                    )
+
+                # Thẻ 2: Tổng NS đánh giá KPIs (tím pastel)
+                with k2:
+                    st.markdown(
+                        f"""
+                        <div class="kpi-pill kpi-bg-purple">
+                            <span class="kpi-icon-badge kpi-icon-purple">📊</span>
+                            <div class="kpi-title">Tổng NS đánh giá KPIs</div>
+                            <div class="kpi-value-container">
+                                <span class="kpi-big-num color-navy">{metrics['total_personnel']:,}</span>
+                            </div>
+                            <div class="kpi-delta {_get_delta_cls(metrics['delta_personnel'])}">{metrics['delta_personnel']}</div>
+                        </div>
+                        """.replace(",", "."),
+                        unsafe_allow_html=True,
+                    )
+
+                # Thẻ 3: Đạt KPIs, kèm % đạt (xanh lá pastel)
+                with k3:
+                    st.markdown(
+                        f"""
+                        <div class="kpi-pill kpi-bg-green">
+                            <span class="kpi-icon-badge kpi-icon-green">🎯</span>
+                            <div class="kpi-title">Đạt KPIs</div>
+                            <div class="kpi-value-container">
+                                <span class="kpi-big-num color-green">{metrics['kpi_dat']:,}</span>
+                                <span class="kpi-sub-pct">{metrics['pct_kpi_dat']:.1f}%</span>
+                            </div>
+                            <div class="kpi-delta {_get_delta_cls(metrics['delta_kpi_dat'])}">{metrics['delta_kpi_dat']}</div>
+                        </div>
+                        """.replace(",", "."),
+                        unsafe_allow_html=True,
+                    )
+
+                # Thẻ 4: Thỏa Lương Phụ Trội, kèm % thỏa (cam pastel)
+                with k4:
+                    st.markdown(
+                        f"""
+                        <div class="kpi-pill kpi-bg-orange">
+                            <span class="kpi-icon-badge kpi-icon-orange">👤</span>
+                            <div class="kpi-title">Thỏa Lương Phụ Trội</div>
+                            <div class="kpi-value-container">
+                                <span class="kpi-big-num color-orange">{metrics['thoa_lpt']:,}</span>
+                                <span class="kpi-sub-pct">{metrics['pct_thoa_lpt']:.1f}%</span>
+                            </div>
+                            <div class="kpi-delta {_get_delta_cls(metrics['delta_thoa_lpt'])}">{metrics['delta_thoa_lpt']}</div>
+                        </div>
+                        """.replace(",", "."),
+                        unsafe_allow_html=True,
+                    )
+
+                # Thẻ 5: KHDN mới, kèm bình quân/ĐVKD (hồng pastel)
+                with k5:
+                    st.markdown(
+                        f"""
+                        <div class="kpi-pill kpi-bg-pink">
+                            <span class="kpi-icon-badge kpi-icon-pink">💼</span>
+                            <div class="kpi-title">KHDN mới<br>(BQ/ĐVKD)</div>
+                            <div class="kpi-value-container">
+                                <span class="kpi-big-num color-magenta">{metrics['total_khdn_moi']:,}</span>
+                                <span class="kpi-sub-pct">{metrics['avg_khdn_moi']:.1f}/ĐV</span>
+                            </div>
+                            <div class="kpi-delta {_get_delta_cls(metrics['delta_khdn_moi'])}">{metrics['delta_khdn_moi']}</div>
+                        </div>
+                        """.replace(",", "."),
+                        unsafe_allow_html=True,
+                    )
+
+                # Thẻ 6: KHTD tăng ròng, kèm bình quân/ĐVKD (vàng hổ phách pastel)
+                with k6:
+                    st.markdown(
+                        f"""
+                        <div class="kpi-pill kpi-bg-amber">
+                            <span class="kpi-icon-badge kpi-icon-amber">📈</span>
+                            <div class="kpi-title">KHTD tăng ròng<br>(BQ/ĐVKD)</div>
+                            <div class="kpi-value-container">
+                                <span class="kpi-big-num color-red">{metrics['total_khtd_tang']:,}</span>
+                                <span class="kpi-sub-pct">{metrics['avg_khtd_tang']:.1f}/ĐV</span>
+                            </div>
+                            <div class="kpi-delta {_get_delta_cls(metrics['delta_khtd_tang'])}">{metrics['delta_khtd_tang']}</div>
+                        </div>
+                        """.replace(",", "."),
+                        unsafe_allow_html=True,
+                    )
+
+                st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+
+                # ── KẾT HỢP 3 BỘ LỌC: KHU VỰC + SỐ THÁNG/KỲ LŨY KẾ + KHỐI CHỈ TIÊU ──────
+                # - Không chọn Khu vực (hoặc bấm "Toàn Hàng") & không chọn Khối chỉ tiêu -> 3 biểu đồ toàn hàng mặc định.
+                # - Có chọn 1 trong 2 (hoặc cả 2) -> ẨN 3 biểu đồ toàn hàng, thay bằng biểu đồ kết hợp:
+                #     + Bấm "Tất cả chỉ tiêu (A-F)": hiện đủ 6 biểu đồ (mỗi Khối 1 biểu đồ riêng, dạng lưới).
+                #     + Chỉ chọn 1 Khối chỉ tiêu (chưa chọn Khu vực): 1 biểu đồ theo 6 Khu vực, bấm vào 1 cột
+                #       Khu vực sẽ tự lọc theo Khu vực đó (như bấm nút Slicer KHU VỰC).
+                #     + Có chọn Khu vực: biểu đồ theo từng Đơn vị kinh doanh (MA_DV) trong Khu vực đó
+                #       (1 biểu đồ nếu chọn đúng 1 Khối chỉ tiêu, hoặc lưới 6 biểu đồ nếu chọn "Tất cả chỉ tiêu").
+                sel_kv = st.session_state.filter_kv
+                sel_ct = st.session_state.filter_chi_tieu
+                has_kv = bool(sel_kv) and sel_kv != "(blank)"
+                has_ct = bool(sel_ct) and sel_ct != "(blank)"
+                is_all_ct = sel_ct == ALL_CT_LABEL
+                is_all_months = st.session_state.filter_thang == ALL_MONTHS_LABEL
+                unit_df = pd.DataFrame()
+
+                def _register_kv_click(click_result, current_kv: str) -> Optional[str]:
+                    """Đọc điểm bấm trên biểu đồ Plotly (nếu có) và trả về nhãn Khu vực tương ứng."""
+                    pts = click_result.get("selection", {}).get("points", []) if click_result is not None else []
+                    if not pts:
+                        return None
+                    lbl = pts[0].get("y", "") or ""
+                    kv_parsed = lbl.split(" (")[0].strip()
+                    return kv_parsed if kv_parsed and kv_parsed != current_kv else None
+
+                if not has_kv and not has_ct and is_all_months:
+                    # "Tất cả các tháng" (chưa chọn Khu vực/Khối chỉ tiêu): so sánh biến động 6 Khu vực qua từng tháng
+                    st.markdown(
+                        """
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+                            <span style="font-size:13px;">📅</span>
+                            <span style="font-size:12.5px; font-weight:800; color:#111827; text-transform:uppercase; letter-spacing:0.3px;">
+                                So sánh biến động hàng tháng — 6 Khu vực
+                            </span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    monthly_kv_df = calc_monthly_series_by_kv(calc_df)
+                    ch1, ch2 = st.columns(2)
+                    with ch1:
+                        st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                        st.plotly_chart(
+                            build_multi_bar_trend_chart(monthly_kv_df, "kv_label", "pct_dat", "% ĐẠT KPIs THEO THÁNG — 6 KHU VỰC", "%"),
+                            width="stretch",
+                            key="fig_trend_kv_dat",
+                        )
+                        st.markdown("</div>", unsafe_allow_html=True)
+                    with ch2:
+                        st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                        st.plotly_chart(
+                            build_multi_bar_trend_chart(monthly_kv_df, "kv_label", "pct_thoa", "% THỎA LPT THEO THÁNG — 6 KHU VỰC", "%"),
+                            width="stretch",
+                            key="fig_trend_kv_thoa",
+                        )
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                elif not has_kv and not has_ct:
+                    # Mặc định (chưa kết hợp bộ lọc nào): 3 biểu đồ toàn hàng (Donut + 2 Bar theo 6 Khu vực)
+                    ch1, ch2, ch3 = st.columns([1.1, 1.45, 1.45])
+                    with ch1:
+                        st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                        fig_donut = build_donut_chart(metrics["donut_kpi_dat"], metrics["donut_kpi_khong_dat"])
+                        st.plotly_chart(fig_donut, width="stretch", key="fig_donut_overview")
+                        st.markdown("</div>", unsafe_allow_html=True)
+                    with ch2:
+                        st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                        fig_bar_kpi = build_kv_kpi_bar(metrics["kv_charts"])
+                        st.plotly_chart(fig_bar_kpi, width="stretch", key="fig_bar_kpi")
+                        st.markdown("</div>", unsafe_allow_html=True)
+                    with ch3:
+                        st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                        fig_bar_lpt = build_kv_lpt_bar(metrics["kv_charts"])
+                        st.plotly_chart(fig_bar_lpt, width="stretch", key="fig_bar_lpt")
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                elif is_all_ct and not has_kv and is_all_months:
+                    # "Tất cả chỉ tiêu" + "Tất cả các tháng" — chưa chọn Khu vực: lưới 6 biểu đồ so sánh 6 Khu vực qua từng tháng
+                    st.markdown(
+                        """
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+                            <span style="font-size:13px;">📅</span>
+                            <span style="font-size:12.5px; font-weight:800; color:#111827; text-transform:uppercase; letter-spacing:0.3px;">
+                                Tất cả 9 Khối chỉ tiêu (A - I) — So sánh biến động hàng tháng theo 6 Khu vực
+                            </span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    monthly_kv_df = calc_monthly_series_by_kv(calc_df)
+                    grid_cols = st.columns(3) + st.columns(3) + st.columns(3)
+                    for idx, (label, tmeta) in enumerate(CHI_TIEU_TREND_META.items()):
+                        with grid_cols[idx]:
+                            st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                            st.plotly_chart(
+                                build_multi_bar_trend_chart(monthly_kv_df, "kv_label", tmeta["kv_key"], f"{tmeta['title']} THEO THÁNG", tmeta["suffix"]),
+                                width="stretch",
+                                key=f"fig_all_ct_trend_kv_{idx}",
+                            )
+                            st.markdown("</div>", unsafe_allow_html=True)
+
+                elif is_all_ct and not has_kv:
+                    # "Tất cả chỉ tiêu" — chưa chọn Khu vực: lưới 6 biểu đồ theo 6 Khu vực, bấm 1 cột để drill-down
+                    st.markdown(
+                        """
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+                            <span style="font-size:13px;">🎯</span>
+                            <span style="font-size:12.5px; font-weight:800; color:#111827; text-transform:uppercase; letter-spacing:0.3px;">
+                                Tất cả 9 Khối chỉ tiêu (A - I) — theo 6 Khu vực (bấm vào 1 cột Khu vực để xem chi tiết theo Đơn vị kinh doanh)
+                            </span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    clicked_kv_grid = None
+
+                    # Hàng 1: Bảng A + Bảng B (2 cột rộng)
+                    row_ab = st.columns(2)
+                    for i, label in enumerate(["Tỷ lệ đạt KPIs", "Tỷ lệ thỏa LPT"]):
+                        with row_ab[i]:
+                            st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                            click_result = st.plotly_chart(
+                                CHI_TIEU_CHART_MAP[label](metrics["kv_charts"]),
+                                width="stretch",
+                                key=f"fig_all_ct_kv_{i}",
+                                on_select="rerun",
+                                selection_mode="points",
+                            )
+                            st.markdown("</div>", unsafe_allow_html=True)
+                            if clicked_kv_grid is None:
+                                clicked_kv_grid = _register_kv_click(click_result, sel_kv)
+
+                    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+                    # Hàng 2: Bảng C — Stacked Bar + Pie cạnh nhau (không cần cuộn xuống mới thấy Pie)
+                    col_stack, col_pie = st.columns([1.6, 1])
+                    with col_stack:
+                        st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                        click_result = st.plotly_chart(
+                            CHI_TIEU_CHART_MAP["Phân bổ dải LPT thực nhận"](metrics["kv_charts"]),
+                            width="stretch",
+                            key="fig_all_ct_kv_2",
+                            on_select="rerun",
+                            selection_mode="points",
+                        )
+                        st.markdown("</div>", unsafe_allow_html=True)
+                        if clicked_kv_grid is None:
+                            clicked_kv_grid = _register_kv_click(click_result, sel_kv)
+                    with col_pie:
+                        st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                        st.plotly_chart(
+                            build_lpt_distribution_pie(calc_df, st.session_state.filter_thang),
+                            width="stretch",
+                            key="fig_all_ct_lpt_pie",
+                        )
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+                    # Hàng 3: Bảng D + Bảng E + Bảng F
+                    row_def = st.columns(3)
+                    for i, label in enumerate(["KHDN mới/ĐVKD", "KHTD tăng ròng/ĐVKD", "KHDN tăng ròng/ĐVKD"]):
+                        with row_def[i]:
+                            st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                            click_result = st.plotly_chart(
+                                CHI_TIEU_CHART_MAP[label](metrics["kv_charts"]),
+                                width="stretch",
+                                key=f"fig_all_ct_kv_{3 + i}",
+                                on_select="rerun",
+                                selection_mode="points",
+                            )
+                            st.markdown("</div>", unsafe_allow_html=True)
+                            if clicked_kv_grid is None:
+                                clicked_kv_grid = _register_kv_click(click_result, sel_kv)
+
+                    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+                    # Hàng 4: Khối G + Khối H + Khối I
+                    row_ghi = st.columns(3)
+                    for i, label in enumerate(["Chi tiết dư nợ", "Chi tiết huy động", "Chi tiết TOI"]):
+                        with row_ghi[i]:
+                            st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                            click_result = st.plotly_chart(
+                                CHI_TIEU_CHART_MAP[label](metrics["kv_charts"]),
+                                width="stretch",
+                                key=f"fig_all_ct_kv_{6 + i}",
+                                on_select="rerun",
+                                selection_mode="points",
+                            )
+                            st.markdown("</div>", unsafe_allow_html=True)
+                            if clicked_kv_grid is None:
+                                clicked_kv_grid = _register_kv_click(click_result, sel_kv)
+
+                    if clicked_kv_grid:
+                        st.session_state.filter_kv = clicked_kv_grid
+                        st.rerun()
+
+                elif is_all_ct and is_all_months:
+                    # "Tất cả chỉ tiêu" + "Tất cả các tháng" — đã chọn Khu vực: lưới 6 biểu đồ so sánh ĐVKD qua từng tháng
+                    st.markdown(
+                        f"""
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+                            <span style="font-size:13px;">📅</span>
+                            <span style="font-size:12.5px; font-weight:800; color:#111827; text-transform:uppercase; letter-spacing:0.3px;">
+                                Tất cả 9 Khối chỉ tiêu (A - I) — {sel_kv} — So sánh biến động hàng tháng theo ĐVKD
+                            </span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    monthly_unit_df = calc_monthly_series_by_unit(
+                        calc_df, sel_kv, st.session_state.filter_ma_dv, st.session_state.filter_nhan_su
+                    )
+                    if monthly_unit_df.empty:
+                        st.info("Không có dữ liệu Đơn vị kinh doanh cho Khu vực và kỳ đang chọn.")
+                    else:
+                        grid_cols = st.columns(3) + st.columns(3) + st.columns(3)
+                        for idx, (label, tmeta) in enumerate(CHI_TIEU_TREND_META.items()):
+                            with grid_cols[idx]:
+                                st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                                st.plotly_chart(
+                                    build_multi_bar_trend_chart(
+                                        monthly_unit_df, "unit_label", tmeta["unit_key"], f"{tmeta['title']} THEO THÁNG", tmeta["suffix"], is_unit_level=True
+                                    ),
+                                    width="stretch",
+                                    key=f"fig_all_ct_trend_unit_{idx}",
+                                )
+                                st.markdown("</div>", unsafe_allow_html=True)
+
+                elif is_all_ct:
+                    # "Tất cả chỉ tiêu" — đã chọn Khu vực: lưới 6 biểu đồ theo từng Đơn vị kinh doanh (MA_DV)
+                    unit_df = get_unit_detail_table(
+                        calc_df, sel_kv, st.session_state.filter_thang, sel_ct,
+                        st.session_state.filter_ma_dv, st.session_state.filter_nhan_su,
+                    )
+                    st.markdown(
+                        f"""
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+                            <span style="font-size:13px;">🎯</span>
+                            <span style="font-size:12.5px; font-weight:800; color:#111827; text-transform:uppercase; letter-spacing:0.3px;">
+                                Tất cả 9 Khối chỉ tiêu (A - I) — {sel_kv} (theo từng Đơn vị kinh doanh)
+                            </span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    if unit_df.empty:
+                        st.info("Không có dữ liệu Đơn vị kinh doanh cho Khu vực và kỳ đang chọn.")
+                    else:
+                        grid_cols = st.columns(3) + st.columns(3) + st.columns(3)
+                        for idx, (label, meta) in enumerate(CHI_TIEU_UNIT_META.items()):
+                            with grid_cols[idx]:
+                                st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                                st.plotly_chart(build_unit_metric_bar(unit_df, meta, sel_kv), width="stretch", key=f"fig_all_ct_unit_{idx}")
+                                st.markdown("</div>", unsafe_allow_html=True)
+
+                elif not has_kv and is_all_months:
+                    # Chỉ chọn 1 KHỐI CHỈ TIÊU + "Tất cả các tháng": so sánh biến động 6 Khu vực qua từng tháng
+                    tmeta = CHI_TIEU_TREND_META.get(sel_ct, DEFAULT_TREND_META)
+                    st.markdown(
+                        f"""
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+                            <span style="font-size:13px;">📅</span>
+                            <span style="font-size:12.5px; font-weight:800; color:#111827; text-transform:uppercase; letter-spacing:0.3px;">
+                                Biểu đồ kết hợp — {sel_ct} — So sánh biến động hàng tháng theo 6 Khu vực
+                            </span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    monthly_kv_df = calc_monthly_series_by_kv(calc_df)
+                    st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                    st.plotly_chart(
+                        build_multi_bar_trend_chart(monthly_kv_df, "kv_label", tmeta["kv_key"], f"{tmeta['title']} THEO THÁNG — 6 KHU VỰC", tmeta["suffix"]),
+                        width="stretch",
+                        key="fig_focus_trend_kv",
+                    )
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                elif not has_kv:
+                    # Chỉ chọn 1 KHỐI CHỈ TIÊU: biểu đồ kết hợp theo 6 Khu vực — bấm cột để drill-down
+                    st.markdown(
+                        f"""
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+                            <span style="font-size:13px;">🎯</span>
+                            <span style="font-size:12.5px; font-weight:800; color:#111827; text-transform:uppercase; letter-spacing:0.3px;">
+                                Biểu đồ kết hợp — {sel_ct} (bấm vào 1 cột Khu vực để xem chi tiết theo Đơn vị kinh doanh)
+                            </span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    focus_chart_fn = CHI_TIEU_CHART_MAP.get(sel_ct)
+                    if sel_ct == "Phân bổ dải LPT thực nhận":
+                        col_stack, col_pie = st.columns([1.6, 1])
+                        with col_stack:
+                            st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                            click_result = st.plotly_chart(
+                                focus_chart_fn(metrics["kv_charts"]),
+                                width="stretch",
+                                key="fig_focus_chi_tieu",
+                                on_select="rerun",
+                                selection_mode="points",
+                            )
+                            st.markdown("</div>", unsafe_allow_html=True)
+                        with col_pie:
+                            st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                            st.plotly_chart(
+                                build_lpt_distribution_pie(calc_df, st.session_state.filter_thang),
+                                width="stretch",
+                                key="fig_focus_lpt_pie",
+                            )
+                            st.markdown("</div>", unsafe_allow_html=True)
+                    else:
+                        st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                        click_result = st.plotly_chart(
+                            focus_chart_fn(metrics["kv_charts"]),
+                            width="stretch",
+                            key="fig_focus_chi_tieu",
+                            on_select="rerun",
+                            selection_mode="points",
+                        )
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                    clicked_kv = _register_kv_click(click_result, sel_kv)
+                    if clicked_kv:
+                        st.session_state.filter_kv = clicked_kv
+                        st.rerun()
+
+                elif is_all_months:
+                    # Có chọn KHU VỰC (+ có thể 1 Khối chỉ tiêu) + "Tất cả các tháng": so sánh biến động ĐVKD qua từng tháng
+                    tmeta = CHI_TIEU_TREND_META.get(sel_ct, DEFAULT_TREND_META)
+                    ct_label = sel_ct if has_ct else f"{tmeta['title']} (mặc định)"
+                    st.markdown(
+                        f"""
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+                            <span style="font-size:13px;">📅</span>
+                            <span style="font-size:12.5px; font-weight:800; color:#111827; text-transform:uppercase; letter-spacing:0.3px;">
+                                Biểu đồ kết hợp — {sel_kv} • {ct_label} — So sánh biến động hàng tháng theo ĐVKD
+                            </span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    monthly_unit_df = calc_monthly_series_by_unit(
+                        calc_df, sel_kv, st.session_state.filter_ma_dv, st.session_state.filter_nhan_su
+                    )
+                    st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                    if monthly_unit_df.empty:
+                        st.info("Không có dữ liệu Đơn vị kinh doanh cho Khu vực và kỳ đang chọn.")
+                    else:
+                        st.plotly_chart(
+                            build_multi_bar_trend_chart(
+                                monthly_unit_df, "unit_label", tmeta["unit_key"], f"{tmeta['title']} THEO THÁNG — {sel_kv}", tmeta["suffix"], is_unit_level=True
+                            ),
+                            width="stretch",
+                            key="fig_unit_trend_combined",
+                        )
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                else:
+                    # Có chọn KHU VỰC + 1 Khối chỉ tiêu cụ thể: biểu đồ theo từng Đơn vị kinh doanh (MA_DV)
+                    meta = CHI_TIEU_UNIT_META.get(sel_ct, DEFAULT_UNIT_META)
+                    unit_df = get_unit_detail_table(
+                        calc_df, sel_kv, st.session_state.filter_thang, sel_ct,
+                        st.session_state.filter_ma_dv, st.session_state.filter_nhan_su,
+                    )
+                    ct_label = sel_ct if has_ct else f"{meta['title']} (mặc định)"
+                    st.markdown(
+                        f"""
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+                            <span style="font-size:13px;">🎯</span>
+                            <span style="font-size:12.5px; font-weight:800; color:#111827; text-transform:uppercase; letter-spacing:0.3px;">
+                                Biểu đồ kết hợp — {sel_kv} • {ct_label} (theo từng Đơn vị kinh doanh)
+                            </span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                    if unit_df.empty:
+                        st.info("Không có dữ liệu Đơn vị kinh doanh cho Khu vực và kỳ đang chọn.")
+                    else:
+                        st.plotly_chart(build_unit_metric_bar(unit_df, meta, sel_kv), width="stretch", key="fig_unit_combined")
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                # ── BIỂU ĐỒ ĐƯỜNG (LINE CHART): XU HƯỚNG THEO TỪNG THÁNG THỰC TẾ ────────
+                # Luôn hiển thị (không phụ thuộc Slicer SỐ THÁNG vì đây là góc nhìn xuyên suốt thời gian),
+                # tôn trọng Slicer KHU VỰC/ĐVKD/Nhân sự nếu có chọn — bổ sung loại biểu đồ khác (đường)
+                # bên cạnh cột/donut.
+                st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+                trend_df = calc_monthly_trend(
+                    calc_df, sel_kv, st.session_state.filter_ma_dv, st.session_state.filter_nhan_su
+                )
+                if not trend_df.empty and len(trend_df) >= 2:
+                    st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+                    trend_title = sel_kv if has_kv else "Toàn hàng"
+                    st.plotly_chart(build_trend_line_chart(trend_df, trend_title), width="stretch", key="fig_trend_line")
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                # ── BẢNG CHI TIẾT ĐƠN VỊ KINH DOANH — SỐ LIỆU ĐẦY ĐỦ (KẾT HỢP KHU VỰC + KHỐI CHỈ TIÊU) ──
+                if has_kv or has_ct:
+                    st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+                    if unit_df.empty:
+                        unit_df = get_unit_detail_table(
+                            calc_df, sel_kv, st.session_state.filter_thang, sel_ct,
+                            st.session_state.filter_ma_dv, st.session_state.filter_nhan_su,
+                        )
+                    thang_display = st.session_state.filter_thang or "Toàn bộ dữ liệu"
+                    kv_display = sel_kv if has_kv else "Toàn hàng (6 Khu vực)"
+                    ct_display = sel_ct if has_ct else "(Chưa chọn Khối chỉ tiêu)"
+                    n_dv_display = max(len(unit_df) - 1, 0) if not unit_df.empty else 0
+                    n_dv_selected = len(st.session_state.filter_ma_dv)
+                    dv_display = f" • {n_dv_selected} ĐVKD đã chọn" if n_dv_selected > 0 else ""
+                    with st.expander(
+                        f"🏢 **Chi tiết Đơn vị kinh doanh — {kv_display} • {ct_display}** "
+                        f"({n_dv_display} ĐVKD • Kỳ: {thang_display}{dv_display})",
+                        expanded=True,
+                    ):
+                        if n_dv_selected > 0:
+                            st.caption(f"📌 Đang lọc riêng {n_dv_selected} Đơn vị kinh doanh đã chọn trong Slicer KHU VỰC.")
+                        if has_ct and sel_ct in CHI_TIEU_UNIT_META:
+                            focus_meta = CHI_TIEU_UNIT_META[sel_ct]
+                            st.caption(f"📌 Đã sắp xếp và tô sáng theo cột **{focus_meta['column']}** tương ứng khối chỉ tiêu đang chọn.")
+                        elif is_all_ct:
+                            st.caption("📌 Đang xem Tất cả chỉ tiêu — bảng sắp xếp mặc định theo Khu vực / Tên ĐVKD (xem đủ 6 chỉ tiêu ở các cột bên phải).")
+                        if unit_df.empty:
+                            st.info("Không có dữ liệu Đơn vị kinh doanh cho Khu vực và kỳ đang chọn.")
+                        else:
+                            st.dataframe(style_unit_detail_table(unit_df, sel_ct), width="stretch", hide_index=True)
+
+            # ── TAB 2: BÁO CÁO 6 KHỐI CHỈ TIÊU (Theo đặc tả công thức) ─────────────
+            with tab_tables:
+                st.subheader("📋 Báo Cáo Chi Tiết 6 Khối Chỉ Tiêu (Đặc tả công thức)")
+
+                if st.session_state.uploaded_df is None:
+                    st.info("💡 Đang hiển thị bảng mẫu với dữ liệu mô phỏng 7 kỳ dữ liệu. Tải lên file Excel để tính toán số liệu thực tế.")
+
+                def _fmt_int(v):
+                    try:
+                        return f"{int(v):,}".replace(",", ".")
+                    except (ValueError, TypeError):
+                        return v
+
+                def _fmt_pct(v):
+                    try:
+                        return f"{float(v):.1f}%"
+                    except (ValueError, TypeError):
+                        return v
+
+                def _fmt_float(v):
+                    try:
+                        return f"{float(v):,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                    except (ValueError, TypeError):
+                        return v
+
+                def format_and_style(df_block: pd.DataFrame, pct_keys: list[str]):
+                    df_fmt = df_block.copy()
+                    for col in df_fmt.columns:
+                        gl = str(col[0]) if isinstance(col, tuple) else str(col)
+                        if any(pk in gl for pk in pct_keys):
+                            df_fmt[col] = df_fmt[col].apply(_fmt_pct)
+                        elif "/ ĐVKD" in gl:
+                            df_fmt[col] = df_fmt[col].apply(_fmt_float)
+                        else:
+                            df_fmt[col] = df_fmt[col].apply(_fmt_int)
+
+                    def highlight_total(row):
+                        if row.name == "Tổng":
+                            return ["background-color: #fff3cd; font-weight: 700; color: #856404;"] * len(row)
+                        return [""] * len(row)
+
+                    return df_fmt.style.apply(highlight_total, axis=1)
+
+                # Mở rộng khối dựa theo Slicer KHỐI CHỈ TIÊU
+                sel_ct = st.session_state.filter_chi_tieu
+                exp_k1 = sel_ct in ["", "(blank)", "Tỷ lệ đạt KPIs"]
+                exp_k2 = sel_ct in ["", "(blank)", "Tỷ lệ thỏa LPT"]
+                exp_k3 = sel_ct in ["", "(blank)", "Phân bổ dải LPT thực nhận"]
+                exp_k4 = sel_ct in ["", "(blank)", "KHDN mới/ĐVKD"]
+                exp_k5 = sel_ct in ["", "(blank)", "KHTD tăng ròng/ĐVKD"]
+                exp_k6 = sel_ct in ["", "(blank)", "KHDN tăng ròng/ĐVKD"]
+                exp_k7 = sel_ct in ["", "(blank)", "Chi tiết dư nợ"]
+                exp_k8 = sel_ct in ["", "(blank)", "Chi tiết huy động"]
+                exp_k9 = sel_ct in ["", "(blank)", "Chi tiết TOI"]
+
+                chart_caption = (
+                    f"📊 Biểu đồ theo bộ lọc SỐ THÁNG đang chọn: **{st.session_state.filter_thang or 'Toàn bộ dữ liệu'}** "
+                    "(luôn hiển thị đủ 6 Khu vực, không lọc theo Slicer Khu vực)."
+                )
+
+                # Render 6 Khối có expander, mỗi khối kèm 1 biểu đồ phù hợp với bản chất chỉ tiêu
+                with st.expander("📌 **Khối 1: Tỷ lệ đạt KPIs** (Bảng A - Theo từng tháng)", expanded=exp_k1):
+                    st.caption(chart_caption)
+                    st.plotly_chart(build_kv_kpi_bar(metrics["kv_charts"]), width="stretch", key="fig_block1_kv")
+                    st.dataframe(format_and_style(b1, ["% nhân sự đạt KPIs", "% Đạt"]), width="stretch")
+
+                with st.expander("📌 **Khối 2: Tỷ lệ thỏa LPT** (Bảng B - Theo từng tháng)", expanded=exp_k2):
+                    st.caption(chart_caption)
+                    st.plotly_chart(build_kv_lpt_bar(metrics["kv_charts"]), width="stretch", key="fig_block2_kv")
+                    st.dataframe(format_and_style(b2, ["% nhân sự thỏa LPT", "% Thỏa"]), width="stretch")
+
+                with st.expander("📌 **Khối 3: Phân bổ dải Hệ số LPT thực nhận** (Bảng C - 6 dải chuẩn hóa)", expanded=exp_k3):
+                    st.caption(chart_caption)
+                    st.caption("Dòng có Hệ số LPT thực nhận rỗng/NULL không tính vào bất kỳ dải nào (gộp vào 'Chưa xác định' trên biểu đồ).")
+                    col_stack, col_pie = st.columns([1.6, 1])
+                    with col_stack:
+                        st.plotly_chart(build_lpt_distribution_chart(metrics["kv_charts"]), width="stretch", key="fig_block3_kv")
+                    with col_pie:
+                        st.plotly_chart(build_lpt_distribution_pie(calc_df, st.session_state.filter_thang), width="stretch", key="fig_block3_pie")
+                    st.dataframe(format_and_style(b3, []), width="stretch")
+
+                with st.expander("📌 **Khối 4: KHDN mới bình quân / ĐVKD** (Bảng D)", expanded=exp_k4):
+                    st.caption(chart_caption)
+                    st.plotly_chart(build_khdn_moi_bar(metrics["kv_charts"]), width="stretch", key="fig_block4_kv")
+                    st.dataframe(format_and_style(b4, []), width="stretch")
+
+                with st.expander("📌 **Khối 5: KHTD tăng ròng bình quân / ĐVKD** (Bảng E)", expanded=exp_k5):
+                    st.caption(chart_caption)
+                    st.plotly_chart(build_khtd_tang_bar(metrics["kv_charts"]), width="stretch", key="fig_block5_kv")
+                    st.dataframe(format_and_style(b5, []), width="stretch")
+
+                with st.expander("📌 **Khối 6: KHDN tăng ròng bình quân / ĐVKD** (Bảng F)", expanded=exp_k6):
+                    st.caption(chart_caption)
+                    st.plotly_chart(build_khdn_tang_bar(metrics["kv_charts"]), width="stretch", key="fig_block6_kv")
+                    st.dataframe(format_and_style(b6, []), width="stretch")
+
+                with st.expander("📌 **Khối 7: Chi tiết dư nợ** (Bảng G - Theo từng tháng)", expanded=exp_k7):
+                    st.caption(chart_caption)
+                    st.caption("⚠️ Số liệu cấp ĐVKD, đã khử trùng lặp theo (Mã ĐVKD, Ngày chốt) trước khi cộng — không nhân sai theo số nhân sự.")
+                    st.plotly_chart(build_khoi_g_bar(metrics["kv_charts"]), width="stretch", key="fig_block7_kv")
+                    st.dataframe(format_and_style(b7, []), width="stretch")
+
+                with st.expander("📌 **Khối 8: Chi tiết huy động** (Bảng H - Theo từng tháng)", expanded=exp_k8):
+                    st.caption(chart_caption)
+                    st.caption("⚠️ Số liệu cấp ĐVKD, đã khử trùng lặp theo (Mã ĐVKD, Ngày chốt) trước khi cộng — không nhân sai theo số nhân sự.")
+                    st.plotly_chart(build_khoi_h_bar(metrics["kv_charts"]), width="stretch", key="fig_block8_kv")
+                    st.dataframe(format_and_style(b8, []), width="stretch")
+
+                with st.expander("📌 **Khối 9: Chi tiết TOI** (Bảng I - 10 nguồn thu + Tổng TOI, Theo từng tháng)", expanded=exp_k9):
+                    st.caption(chart_caption)
+                    st.caption("⚠️ Số liệu cấp ĐVKD, đã khử trùng lặp theo (Mã ĐVKD, Ngày chốt) trước khi cộng — không nhân sai theo số nhân sự.")
+                    st.plotly_chart(build_khoi_i_bar(metrics["kv_charts"]), width="stretch", key="fig_block9_kv")
+                    st.dataframe(format_and_style(b9, []), width="stretch")
+
+            # ── TAB 3: XUẤT FILE EXCEL BÁO CÁO TRỌN BỘ ──────────────────────────────
+            with tab_export:
+                st.subheader("📥 Xuất Báo Cáo Excel Trọn Bộ 9 Khối")
+                st.write("Nhấn nút bên dưới để tải file Excel đã tính toán và định dạng tự động gồm 9 sheet tương ứng với 9 khối chỉ tiêu theo đúng đặc tả công thức.")
+
+                blocks_to_export = {
+                    "1-Ty le dat KPIs": b1,
+                    "2-Ty le thoa LPT": b2,
+                    "3-Phan bo dai LPT": b3,
+                    "4-KHDN moi BQ-DVKD": b4,
+                    "5-KHTD tang rong BQ": b5,
+                    "6-KHDN tang rong BQ": b6,
+                    "7-Chi tiet du no": b7,
+                    "8-Chi tiet huy dong": b8,
+                    "9-Chi tiet TOI": b9,
+                }
+
+                excel_data = export_blocks_to_excel(blocks_to_export)
+
+                st.download_button(
+                    label="📊 Tải Xuống File Báo Cáo Excel (.xlsx)",
+                    data=excel_data,
+                    file_name="HDBank_Bao_Cao_KPIs_LPT_9_Khoi.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.document",
+                )
+
+    with top_tab_dvkd:
+        has_dvkd_data = (st.session_state.uploaded_dvkd_items is not None) or st.session_state.use_demo
+        if not has_dvkd_data:
+            st.info("📂 Chưa có dữ liệu 'Data import số ĐVKD'. Vui lòng tải lên tại đây để xem Dashboard số liệu toàn hàng:")
+            inline_dvkd_file = st.file_uploader(
+                "Chọn file Excel chứa sheet 'Data import số ĐVKD':",
+                type=["xlsx"],
+                key="inline_dvkd_uploader",
+            )
+            if inline_dvkd_file is not None:
+                try:
+                    with st.spinner("Đang xử lý dữ liệu số liệu toàn hàng..."):
+                        items = load_and_preprocess_dvkd_excel(inline_dvkd_file.read())
+                        st.session_state.uploaded_dvkd_items = items
+                        st.session_state.uploaded_file_name_dvkd = inline_dvkd_file.name
+                        st.success(f"✅ Đã tải thành công {len(items):,} chỉ tiêu số liệu toàn hàng!")
+                        st.rerun()
+                except Exception as ex:
+                    st.error(f"❌ Lỗi xử lý file Excel: {ex}")
+        else:
+            dvkd_items = (
+                st.session_state.uploaded_dvkd_items
+                if st.session_state.uploaded_dvkd_items is not None
+                else generate_demo_dvkd_items()
+            )
+            st.subheader("🏦 Dashboard số liệu toàn hàng")
+            st.caption(f"Nguồn: {st.session_state.uploaded_file_name_dvkd or 'Dữ liệu mẫu'} • {len(dvkd_items):,} chỉ tiêu")
+            st.info("🚧 (Bước A - placeholder) Giao diện đầy đủ (filter tháng/chỉ tiêu, 3 thẻ số liệu, biểu đồ) sẽ hoàn thiện ở Bước D. Danh sách chỉ tiêu hiện có:")
+            st.dataframe(
+                pd.DataFrame(
+                    [{"Section": it["section"], "Chỉ tiêu": it["label"], "ĐVT": it["dvt"]} for it in dvkd_items]
+                ),
+                width="stretch",
+            )
+
+
+if __name__ == "__main__":
+    main()
